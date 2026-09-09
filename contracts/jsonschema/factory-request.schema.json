@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/maulsparks/Outside_Orchestrator/contracts/jsonschema/factory-request.schema.json",
+  "title": "FactoryRequest",
+  "type": "object",
+  "required": [
+    "request_id",
+    "idempotency_key",
+    "tenant_id",
+    "repository_id",
+    "parent_git_sha",
+    "intent",
+    "acceptance_criteria",
+    "policy_version",
+    "agents_md_sha256",
+    "budget_cents"
+  ],
+  "properties": {
+    "request_id": { "type": "string", "minLength": 1 },
+    "idempotency_key": { "type": "string", "minLength": 1 },
+    "tenant_id": { "type": "string", "minLength": 1 },
+    "repository_id": { "type": "string", "minLength": 1 },
+    "parent_git_sha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "intent": { "type": "string", "minLength": 1 },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1
+    },
+    "policy_version": { "type": "string", "minLength": 1 },
+    "agents_md_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "budget_cents": { "type": "integer", "minimum": 0 },
+    "requested_model_policy": { "type": "string" }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/maulsparks/Outside_Orchestrator/contracts/jsonschema/sandbox-delegation.schema.json",
+  "title": "SandboxDelegation",
+  "type": "object",
+  "required": [
+    "run_id",
+    "tenant_id",
+    "phase",
+    "phase_attempt",
+    "schema_version",
+    "policy_version",
+    "parent_git_sha",
+    "task_envelope_hash",
+    "agents_md_sha256",
+    "allowed_paths",
+    "immutable_paths",
+    "acceptance_criteria",
+    "command_policy_id",
+    "network_policy",
+    "resource_limits",
+    "runtime_credential_reference",
+    "expires_at"
+  ],
+  "properties": {
+    "run_id": { "type": "string", "minLength": 1 },
+    "tenant_id": { "type": "string", "minLength": 1 },
+    "arm_id": { "type": "string" },
+    "phase": { "enum": ["plan", "build", "test", "review", "document"] },
+    "phase_attempt": { "type": "integer", "minimum": 1 },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "policy_version": { "type": "string", "minLength": 1 },
+    "parent_git_sha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "task_envelope_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "agents_md_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "allowed_paths": { "type": "array", "items": { "type": "string" } },
+    "immutable_paths": { "type": "array", "items": { "type": "string" } },
+    "acceptance_criteria": { "type": "array", "items": { "type": "string" } },
+    "command_policy_id": { "type": "string", "minLength": 1 },
+    "network_policy": { "enum": ["isolated", "approved_private_only"] },
+    "resource_limits": {
+      "type": "object",
+      "required": ["cpu_millis", "memory_mb", "wall_time_seconds", "output_bytes"],
+      "properties": {
+        "cpu_millis": { "type": "integer", "minimum": 1 },
+        "memory_mb": { "type": "integer", "minimum": 1 },
+        "wall_time_seconds": { "type": "integer", "minimum": 1 },
+        "output_bytes": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "frozen_suite_id": { "type": "string" },
+    "runtime_credential_reference": { "type": "string", "minLength": 1 },
+    "expires_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}
