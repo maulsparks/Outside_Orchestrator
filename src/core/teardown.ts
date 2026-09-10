@@ -1,4 +1,4 @@
-import { TeardownAttestation } from "../../contracts/interfaces";
+import type { TeardownAttestation } from "../../contracts/interfaces.js";
 
 export function canBeCleanTerminated(attestation: TeardownAttestation): boolean {
   return (

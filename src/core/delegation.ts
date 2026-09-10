@@ -1,4 +1,4 @@
-import { SandboxDelegation } from "../../contracts/interfaces";
+import type { SandboxDelegation } from "../../contracts/interfaces.js";
 
 export function assertV1DelegationPolicy(delegation: SandboxDelegation): void {
   if (delegation.network_policy !== "isolated") {

@@ -1,4 +1,4 @@
-import { FactoryRequest } from "../../contracts/interfaces";
+import type { FactoryRequest } from "../../contracts/interfaces.js";
 
 export function validateRequestShape(input: FactoryRequest): void {
   if (!input.idempotency_key) throw new Error("missing idempotency_key");
