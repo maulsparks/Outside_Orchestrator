@@ -16,7 +16,7 @@ This repository complements [`maulsparks/Inside_Orchestrator`](https://github.co
 
 ## Repository layout
 
-- `docs/` — role contracts, architecture notes, acceptance criteria
+- `docs/` — role contracts, architecture notes, acceptance criteria, and [v0.2 implementation backlog](docs/v0.2_implementation_backlog.md)
 - `contracts/` — TypeScript interfaces and JSON Schemas
 - `policies/` — baseline network and delegation policy docs
 - `runbooks/` — operational procedures (lease lifecycle, teardown/evidence)
