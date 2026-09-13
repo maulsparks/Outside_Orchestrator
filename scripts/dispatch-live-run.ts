@@ -126,7 +126,7 @@ async function main() {
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         process.stdout.write(`\r  [${elapsed}s] Phase: ${currentRun.phase.padEnd(16)} | State Version: ${currentRun.state_version}    `);
 
-        if (["clean_terminated", "quarantined", "terminal"].includes(currentRun.phase)) {
+        if (["clean_terminated", "quarantined"].includes(currentRun.phase)) {
           console.log("\n");
           break;
         }
