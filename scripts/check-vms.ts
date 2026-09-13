@@ -19,7 +19,7 @@ async function main() {
   const execIdx = args.indexOf("--exec");
   if (execIdx !== -1 && args[execIdx + 1] && args[execIdx + 2]) {
     const vmName = args[execIdx + 1];
-    const cmd = args[execIdx + 2];
+    const cmd = args.slice(execIdx + 2).join(" ");
     console.log(`Executing in ${vmName}: ${cmd}...`);
     try {
       const res = await client.execCommand(vmName, cmd);
