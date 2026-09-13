@@ -231,14 +231,15 @@ def add_trace(event_type, payload):
     return evt
 
 def get_trace_jsonl():
-    return "\\n".join(json.dumps(e, separators=(',', ':')) for e in TRACE_EVENTS)
+    return "\n".join(json.dumps(e, separators=(',', ':')) for e in TRACE_EVENTS)
 
 def compute_manifest_sha256():
     return hashlib.sha256(get_trace_jsonl().encode('utf-8')).hexdigest()
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        pass
+        sys.stderr.write("%s - - [%s] %s\n" % (self.client_address[0], self.log_date_time_string(), format % args))
+        sys.stderr.flush()
 
     def send_json(self, status_code, obj):
         data = json.dumps(obj).encode('utf-8')
@@ -351,13 +352,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_json(404, {"error": "not_found"})
 
+http.server.ThreadingHTTPServer.allow_reuse_address = True
 server = http.server.ThreadingHTTPServer(('0.0.0.0', PORT), Handler)
 server.serve_forever()
 PYEOF
+chmod +x /home/exedev/inside-orchestrator/server.py
 
-# 4. Launch Inside Orchestrator daemon in background
-echo "Starting Inside Orchestrator daemon..."
-nohup python3 /home/exedev/inside-orchestrator/server.py > /tmp/inside-orchestrator.log 2>&1 &
+# 4. Install and launch Inside Orchestrator as dedicated systemd service
+echo "Installing inside-orchestrator.service..."
+cat << 'UNIT' | sudo tee /etc/systemd/system/inside-orchestrator.service > /dev/null
+[Unit]
+Description=Inside Orchestrator Daemon
+After=network.target tailscaled.service
+
+[Service]
+Type=simple
+User=exedev
+WorkingDirectory=/home/exedev/inside-orchestrator
+ExecStart=/usr/bin/python3 -u /home/exedev/inside-orchestrator/server.py
+Restart=on-failure
+RestartSec=2
+StandardOutput=append:/tmp/inside-orchestrator.log
+StandardError=append:/tmp/inside-orchestrator.log
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now inside-orchestrator.service
+sleep 1
+sudo systemctl is-active inside-orchestrator.service || true
 echo "=== Bootstrap finished at $(date -u) ==="
 `;
 }

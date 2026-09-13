@@ -70,6 +70,8 @@ export class LiveDispatcher {
     let currentPhase = run.phase;
 
     try {
+      console.log(`[LiveDispatcher:${runId}] Starting live execution: phase='${phase}', sandbox='${sandboxId}'`);
+
       // 1. Advance phase to provisioning in Tier 3
       const provTransition = await this.stateMachine.transition({
         runId,
@@ -81,8 +83,10 @@ export class LiveDispatcher {
       });
       stateVersion = provTransition.newStateVersion;
       currentPhase = "provisioning";
+      console.log(`[LiveDispatcher:${runId}] Phase advanced to 'provisioning' (state_version: ${stateVersion})`);
 
       // 2. Mint single-use ephemeral Tailscale auth key (tag:factory-sandbox only)
+      console.log(`[LiveDispatcher:${runId}] Minting single-use Tailscale auth key (tag:factory-sandbox)...`);
       const authKey = await this.tailscaleClient.createSandboxAuthKey({
         tags: ["tag:factory-sandbox"],
         ephemeral: true,
@@ -97,6 +101,7 @@ export class LiveDispatcher {
       });
       const formattedScript = formatSetupScriptForExeDev(rawBootstrap);
 
+      console.log(`[LiveDispatcher:${runId}] Provisioning exe.dev VM '${vmName}' with bootstrap payload...`);
       await this.exeDevClient.createSandboxVm({
         runId,
         armId: config.armId,
@@ -104,12 +109,18 @@ export class LiveDispatcher {
         memoryMb: config.memoryMb ?? 2048,
         setupScript: formattedScript
       });
+      console.log(`[LiveDispatcher:${runId}] VM created on exe.dev. Waiting for Tailscale enrollment...`);
 
       // 4. Poll Tailscale device API until VM enrolls
       const startTime = Date.now();
+      let lastEnrollLog = 0;
       while (!tailscaleDevice && (Date.now() - startTime < maxWaitBootMs)) {
         tailscaleDevice = await this.tailscaleClient.findDeviceByHostname(vmName);
         if (!tailscaleDevice) {
+          if (Date.now() - lastEnrollLog > 10000) {
+            console.log(`[LiveDispatcher:${runId}] Waiting for '${vmName}' on Tailscale (${((Date.now() - startTime)/1000).toFixed(0)}s)...`);
+            lastEnrollLog = Date.now();
+          }
           await new Promise(r => setTimeout(r, pollIntervalMs));
         }
       }
@@ -124,6 +135,7 @@ export class LiveDispatcher {
       }
 
       const sandboxBaseUrl = nodeIp.includes(":") ? `http://${nodeIp}` : `http://${nodeIp}:8787`;
+      console.log(`[LiveDispatcher:${runId}] Enrolled: hostname='${tailscaleDevice.hostname}', ip='${nodeIp}', url='${sandboxBaseUrl}'`);
 
       // 5. Pre-delegation posture gate
       const posture = verifyNodePosture({
@@ -135,6 +147,7 @@ export class LiveDispatcher {
       if (!posture.passed) {
         throw new Error(`NodePostureGateFailed: ${posture.violations.join(", ")}`);
       }
+      console.log(`[LiveDispatcher:${runId}] Pre-delegation posture gate passed.`);
 
       await this.evidenceLedger.recordEvent({
         tenantId,
@@ -158,22 +171,33 @@ export class LiveDispatcher {
       });
 
       // 6. Wait for Inside Orchestrator health check on port 8787
+      console.log(`[LiveDispatcher:${runId}] Probing Inside Orchestrator at ${sandboxBaseUrl}/health...`);
       let daemonReady = false;
       const healthStart = Date.now();
-      while (!daemonReady && (Date.now() - healthStart < 60000)) {
+      let lastHealthLog = 0;
+      while (!daemonReady && (Date.now() - healthStart < 90000)) {
         try {
           const res = await fetch(`${sandboxBaseUrl}/health`, { signal: AbortSignal.timeout(3000) });
-          if (res.ok) daemonReady = true;
-        } catch {
-          await new Promise(r => setTimeout(r, 100));
+          if (res.ok) {
+            daemonReady = true;
+            console.log(`[LiveDispatcher:${runId}] Inside Orchestrator daemon is healthy (${((Date.now() - healthStart)/1000).toFixed(1)}s).`);
+            break;
+          }
+        } catch (e: any) {
+          if (Date.now() - lastHealthLog > 5000) {
+            console.log(`[LiveDispatcher:${runId}] Probing ${sandboxBaseUrl}/health (${((Date.now() - healthStart)/1000).toFixed(0)}s elapsed)... ${e.message}`);
+            lastHealthLog = Date.now();
+          }
+          await new Promise(r => setTimeout(r, 2000));
         }
       }
 
       if (!daemonReady) {
-        throw new Error(`Inside Orchestrator daemon on ${sandboxBaseUrl} failed to become healthy within 60s`);
+        throw new Error(`Inside Orchestrator daemon on ${sandboxBaseUrl} failed to become healthy within 90s`);
       }
 
       // 7. Dispatch single-phase delegation envelope
+      console.log(`[LiveDispatcher:${runId}] Building and dispatching delegation envelope...`);
       const dispatcher = new DelegationDispatcher();
       const dispatchOptions: BuildDelegationOptions = {
         run: { ...run, state_version: stateVersion },
@@ -212,6 +236,7 @@ export class LiveDispatcher {
       });
 
       // Deliver envelope to Inside Orchestrator via POST /delegate
+      console.log(`[LiveDispatcher:${runId}] Delivering envelope to ${sandboxBaseUrl}/delegate...`);
       const delivRes = await fetch(`${sandboxBaseUrl}/delegate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -234,6 +259,7 @@ export class LiveDispatcher {
       });
       stateVersion = delTransition.newStateVersion;
       currentPhase = "delegated";
+      console.log(`[LiveDispatcher:${runId}] Phase advanced to 'delegated' (v${stateVersion})`);
 
       const progTransition = await this.stateMachine.transition({
         runId,
@@ -245,8 +271,10 @@ export class LiveDispatcher {
       });
       stateVersion = progTransition.newStateVersion;
       currentPhase = "in_progress";
+      console.log(`[LiveDispatcher:${runId}] Phase advanced to 'in_progress' (v${stateVersion})`);
 
       // 8. Supervise execution and poll status
+      console.log(`[LiveDispatcher:${runId}] Supervising sandbox execution...`);
       let executionComplete = false;
       const execStart = Date.now();
       const maxExecTimeMs = (config.ttlSeconds ?? 600) * 1000;
@@ -259,6 +287,7 @@ export class LiveDispatcher {
             const sData = (await sRes.json()) as { status: string };
             if (sData.status === "completed" || sData.status === "failed") {
               executionComplete = true;
+              console.log(`[LiveDispatcher:${runId}] Inside execution reported status: '${sData.status}'`);
             }
           }
         } catch {
@@ -271,6 +300,7 @@ export class LiveDispatcher {
       }
 
       // 9. Pull advisory trace package and verify manifest hash (v1 pull model)
+      console.log(`[LiveDispatcher:${runId}] Pulling advisory traces from sandbox...`);
       const advisory = await collectAndVerifyAdvisoryOutput({
         runId,
         tenantId,
@@ -300,8 +330,10 @@ export class LiveDispatcher {
           };
         }
       });
+      console.log(`[LiveDispatcher:${runId}] Advisory traces verified (manifest SHA: ${advisory.computedManifestSha256.substring(0, 16)}...)`);
 
       // 10. Effect Reconciliation Gate (ERG)
+      console.log(`[LiveDispatcher:${runId}] Reconciling effects with ERG...`);
       const ergResult = reconcileTreeEffects({
         baseTreeSha: run.parent_git_sha,
         postTreeSha: "observed-tree-sha",
@@ -314,8 +346,10 @@ export class LiveDispatcher {
       if (!ergResult.passed) {
         throw new Error(`EffectReconciliationFailed: ${ergResult.rejectionReason}`);
       }
+      console.log(`[LiveDispatcher:${runId}] ERG passed.`);
 
       // 11. Run 13-step teardown cleanly
+      console.log(`[LiveDispatcher:${runId}] Initiating clean 13-step teardown...`);
       const teardownResult = await this.teardownEngine.executeTeardown({
         runId,
         tenantId,
@@ -333,6 +367,8 @@ export class LiveDispatcher {
         }
       });
 
+      console.log(`[LiveDispatcher:${runId}] Teardown completed: cleanTerminated=${teardownResult.cleanTerminated}, finalPhase=${teardownResult.finalPhase}`);
+
       return {
         runId,
         status: teardownResult.cleanTerminated ? "completed" : "failed",
@@ -340,6 +376,7 @@ export class LiveDispatcher {
         teardownResult
       };
     } catch (err: any) {
+      console.error(`[LiveDispatcher:${runId}] Live execution error: ${err.message}. Initiating teardown...`);
       // Execute teardown across any failure flow
       const teardownResult = await this.teardownEngine.executeTeardown({
         runId,
@@ -354,6 +391,7 @@ export class LiveDispatcher {
         expectedStateVersion: stateVersion,
         currentPhase
       });
+      console.log(`[LiveDispatcher:${runId}] Failure teardown finished: cleanTerminated=${teardownResult.cleanTerminated}, finalPhase=${teardownResult.finalPhase}`);
 
       return {
         runId,

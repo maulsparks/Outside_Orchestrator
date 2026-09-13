@@ -117,7 +117,9 @@ async function main() {
   while (Date.now() - pollStart < (ttlSeconds + 60) * 1000) {
     await new Promise(r => setTimeout(r, 2000));
     try {
-      const statusRes = await fetch(`${host}/v1/runs/${runId}`);
+      const statusRes = await fetch(`${host}/v1/runs/${runId}`, {
+        signal: AbortSignal.timeout(5000)
+      });
       if (statusRes.ok) {
         const data = (await statusRes.json()) as any;
         currentRun = data.run;
@@ -128,9 +130,14 @@ async function main() {
           console.log("\n");
           break;
         }
+      } else {
+        console.warn(`\n[Poll Warning] Server returned status ${statusRes.status}`);
       }
-    } catch {
-      // Continue polling on transient glitch
+    } catch (err: any) {
+      // Print glitch reason if not transient
+      if (err.name !== "TimeoutError") {
+        console.warn(`\n[Poll Warning] Network glitch: ${err.message}`);
+      }
     }
   }
 
