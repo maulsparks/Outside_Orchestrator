@@ -31,8 +31,23 @@ async function main() {
     }
   }
 
+  const rawIdx = args.indexOf("--raw");
+  if (rawIdx !== -1 && args[rawIdx + 1]) {
+    const rawCmd = args[rawIdx + 1];
+    console.log(`Sending raw command to exe.dev: ${rawCmd}...`);
+    const res = await fetch("https://exe.dev/exec", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.EXEDEV_API_KEY}`,
+        "Content-Type": "text/plain"
+      },
+      body: rawCmd
+    });
+    console.log(`Status: ${res.status}`);
+    console.log(`Output: ${await res.text()}`);
+    return;
+  }
 
-  console.log("Querying exe.dev for active VMs...");
   const vms = await client.listVms();
   console.log(`Found ${vms.length} VM entry/entries:`);
   for (const vm of vms) {
