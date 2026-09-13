@@ -10,9 +10,9 @@ export type Phase =
 
 export const ALLOWED_TRANSITIONS: Record<Phase, readonly Phase[]> = {
   created: ["provisioning", "quarantined"],
-  provisioning: ["delegated", "quarantined"],
-  delegated: ["in_progress", "quarantined"],
-  in_progress: ["evaluating", "quarantined"],
+  provisioning: ["delegated", "quarantined", "terminal"],
+  delegated: ["in_progress", "quarantined", "terminal"],
+  in_progress: ["evaluating", "quarantined", "terminal"],
   evaluating: ["terminal", "quarantined"],
   terminal: ["clean_terminated", "quarantined"],
   clean_terminated: [],
