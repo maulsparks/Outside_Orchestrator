@@ -223,6 +223,6 @@ nohup node /opt/inside-orchestrator/server.js > /var/log/inside-orchestrator.log
 export function formatSetupScriptForExeDev(script: string): string {
   const gzipped = zlib.gzipSync(Buffer.from(script, "utf8"));
   const b64 = gzipped.toString("base64");
-  return `echo "${b64}" | base64 -d | gunzip | bash`;
+  return `echo ${b64} | base64 -d | gunzip | bash`;
 }
 

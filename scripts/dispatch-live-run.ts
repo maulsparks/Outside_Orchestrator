@@ -100,28 +100,49 @@ async function main() {
     body: JSON.stringify({
       phase,
       allowed_paths: allowedPaths,
-      ttl_seconds: ttlSeconds
+      ttl_seconds: ttlSeconds,
+      async: true
     })
   });
 
-  const durationSec = ((Date.now() - startTime) / 1000).toFixed(1);
-
   if (!dispatchRes.ok) {
-    console.error(`✖ Dispatch failed (${dispatchRes.status}) in ${durationSec}s:`, await dispatchRes.text());
+    console.error(`✖ Dispatch failed (${dispatchRes.status}):`, await dispatchRes.text());
     process.exit(1);
   }
 
-  const result = (await dispatchRes.json()) as any;
+  console.log("✔ Dispatch accepted by Tier 1 control plane. Monitoring lifecycle...\n");
+
+  let currentRun: any = null;
+  const pollStart = Date.now();
+  while (Date.now() - pollStart < (ttlSeconds + 60) * 1000) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const statusRes = await fetch(`${host}/v1/runs/${runId}`);
+      if (statusRes.ok) {
+        const data = (await statusRes.json()) as any;
+        currentRun = data.run;
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        process.stdout.write(`\r  [${elapsed}s] Phase: ${currentRun.phase.padEnd(16)} | State Version: ${currentRun.state_version}    `);
+
+        if (["clean_terminated", "quarantined", "terminal"].includes(currentRun.phase)) {
+          console.log("\n");
+          break;
+        }
+      }
+    } catch {
+      // Continue polling on transient glitch
+    }
+  }
+
+  const durationSec = ((Date.now() - startTime) / 1000).toFixed(1);
+
   console.log("=================================================================");
-  console.log(`Execution Finished in ${durationSec}s — Status: ${result.status.toUpperCase()}`);
+  console.log(`Execution Finished in ${durationSec}s — Final Phase: ${currentRun?.phase?.toUpperCase()}`);
   console.log("=================================================================");
-  console.log(`Clean Terminated:      ${result.cleanTerminated ? "YES (CLEAN_TERMINATED)" : "NO (QUARANTINED)"}`);
-  console.log(`Final Run Phase:       ${result.teardownResult.finalPhase}`);
-  console.log(`Evidence Signer Key:   ${result.teardownResult.attestation.signingKeyId}`);
-  console.log(`Attestation Signature: ${result.teardownResult.attestation.signature.slice(0, 32)}...`);
-  console.log(`Active Ports Probed:   ${JSON.stringify(result.teardownResult.probeSummary.probes.map((p: any) => ({ port: p.port, unreachable: p.unreachable })))}`);
+  console.log(`Run ID:            ${runId}`);
+  console.log(`Final State Version: ${currentRun?.state_version}`);
+  console.log(`Status:            ${currentRun?.phase === "clean_terminated" ? "CLEAN_TERMINATED (Passed)" : "QUARANTINED / TERMINAL"}`);
   console.log("=================================================================\n");
-  console.log("✔ Run verified and all 12 CLEAN_TERMINATED predicates satisfied.");
 }
 
 main().catch(err => {
