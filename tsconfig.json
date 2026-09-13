@@ -10,5 +10,5 @@
     "outDir": "dist",
     "noEmitOnError": true
   },
-  "include": ["src", "contracts", "tests"]
+  "include": ["src", "contracts", "tests", "scripts"]
 }
