@@ -11,6 +11,8 @@ import { EvidenceLedger, SupabaseEvidenceStore } from "./warden/ledger.js";
 import { TeardownEngine, StaleCallbackRejector } from "./core/teardownEngine.js";
 import { authorizeHarvest } from "./core/harvest.js";
 import { LiveDispatcher, LiveDispatchConfig } from "./core/liveDispatcher.js";
+import { SupabasePhaseEnvelopeStore } from "./core/dispatcher.js";
+import { MultiPhaseSequencer, MultiPhaseSequenceConfig } from "./core/multiPhaseSequencer.js";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -21,13 +23,16 @@ let runsRepo: SupabaseRunStateStore | null = null;
 let leaseManager: LeaseManager | null = null;
 let teardownEngine: TeardownEngine | null = null;
 let evidenceLedger: EvidenceLedger | null = null;
+let phaseEnvelopeStore: SupabasePhaseEnvelopeStore | null = null;
 let liveDispatcher: LiveDispatcher | null = null;
+let multiPhaseSequencer: MultiPhaseSequencer | null = null;
 let wardenPublicKeyPem = "";
 
 try {
   if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
     const adminClient = getAdminClient();
     runsRepo = new SupabaseRunStateStore(adminClient);
+    phaseEnvelopeStore = new SupabasePhaseEnvelopeStore(adminClient);
     const leaseStorage = new SupabaseLeaseStorage(adminClient);
     leaseManager = new LeaseManager(leaseStorage, process.env.HOSTNAME || "srv719637");
     admissionEngine = new RequestAdmissionEngine(runsRepo, leaseManager);
@@ -65,7 +70,16 @@ try {
         leaseManager,
         evidenceLedger,
         teardownEngine,
-        stateMachine
+        stateMachine,
+        phaseEnvelopeStore
+      );
+
+      multiPhaseSequencer = new MultiPhaseSequencer(
+        liveDispatcher,
+        stateMachine,
+        runsRepo,
+        evidenceLedger,
+        phaseEnvelopeStore
       );
     }
   }
@@ -175,6 +189,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await parseJsonBody<{
+        phases?: Array<"plan" | "build" | "test" | "review" | "document">;
         phase?: "plan" | "build" | "test" | "review" | "document";
         allowed_paths?: string[];
         immutable_paths?: string[];
@@ -184,11 +199,44 @@ const server = http.createServer(async (req, res) => {
         async?: boolean;
       }>(req);
 
+      const targetPhases = (body.phases && body.phases.length > 0)
+        ? body.phases
+        : [body.phase ?? "build"];
+
+      const allowedPaths = body.allowed_paths ?? ["src/**", "output/**"];
+      const immutablePaths = body.immutable_paths ?? ["AGENTS.md"];
+
+      if (multiPhaseSequencer && targetPhases.length > 1) {
+        const seqConfig: MultiPhaseSequenceConfig = {
+          run,
+          phases: targetPhases,
+          allowedPaths,
+          immutablePaths,
+          cpuMillis: body.cpu_millis,
+          memoryMb: body.memory_mb,
+          ttlSeconds: body.ttl_seconds
+        };
+
+        if (body.async) {
+          multiPhaseSequencer.executeSequence(seqConfig).catch((err) => {
+            console.error(`[MultiPhaseSequencer] Background run '${runId}' failed:`, err);
+          });
+          res.writeHead(202, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ status: "dispatching", runId, phases: targetPhases }));
+          return;
+        }
+
+        const result = await multiPhaseSequencer.executeSequence(seqConfig);
+        res.writeHead(result.status === "completed" ? 200 : 500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+        return;
+      }
+
       const dispatchConfig: LiveDispatchConfig = {
         run,
-        phase: body.phase ?? "build",
-        allowedPaths: body.allowed_paths ?? ["src/**", "output/**"],
-        immutablePaths: body.immutable_paths ?? ["AGENTS.md"],
+        phase: targetPhases[0],
+        allowedPaths,
+        immutablePaths,
         cpuMillis: body.cpu_millis,
         memoryMb: body.memory_mb,
         ttlSeconds: body.ttl_seconds
@@ -199,7 +247,7 @@ const server = http.createServer(async (req, res) => {
           console.error(`[LiveDispatcher] Background run '${runId}' failed:`, err);
         });
         res.writeHead(202, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ status: "dispatching", runId }));
+        res.end(JSON.stringify({ status: "dispatching", runId, phase: targetPhases[0] }));
         return;
       }
 
@@ -352,10 +400,20 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
+      let envelopes: unknown[] = [];
+      if (phaseEnvelopeStore) {
+        try {
+          envelopes = await phaseEnvelopeStore.listPhaseEnvelopes(runId);
+        } catch {
+          // Non-blocking
+        }
+      }
+
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
         run,
         lease: leaseInfo,
+        phase_envelopes: envelopes,
         node: process.env.HOSTNAME || "srv719637",
         timestamp: new Date().toISOString()
       }));

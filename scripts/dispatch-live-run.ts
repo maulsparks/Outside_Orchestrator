@@ -8,7 +8,8 @@
  * Options:
  *   --host <url>           Orchestrator URL (default: http://127.0.0.1:3000 or http://100.81.98.73)
  *   --tenant <id>          Tenant ID (default: tenant-live-01)
- *   --phase <phase>        Phase to execute: plan | build | test | review | document (default: build)
+ *   --phases <phases>      Comma-separated phases: plan,build,test,review (default: build)
+ *   --phase <phase>        Single phase shorthand: plan | build | test | review
  *   --parent-sha <sha>     Parent Git commit SHA (default: 3b25760...)
  *   --paths <paths>        Allowed paths comma-separated (default: src/**,output/**)
  *   --ttl <seconds>        Sandbox wall-clock TTL in seconds (default: 300)
@@ -24,7 +25,8 @@ function getArg(flag: string, defaultValue: string): string {
 
 const host = getArg("--host", process.env.ORCHESTRATOR_URL || "http://127.0.0.1:3000").replace(/\/$/, "");
 const tenantId = getArg("--tenant", "tenant-live-01");
-const phase = getArg("--phase", "build");
+const rawPhases = getArg("--phases", getArg("--phase", "build"));
+const phases = rawPhases.split(",").map(p => p.trim()) as any[];
 const parentGitSha = getArg("--parent-sha", "3b2576026155a47f0132aa99fa78a43c045d92d5");
 const allowedPaths = getArg("--paths", "src/**,output/**").split(",").map(p => p.trim());
 const ttlSeconds = parseInt(getArg("--ttl", "300"), 10);
@@ -36,7 +38,7 @@ async function main() {
   console.log("=================================================================");
   console.log(`Target Host:       ${host}`);
   console.log(`Tenant ID:         ${tenantId}`);
-  console.log(`Phase:             ${phase}`);
+  console.log(`Phases:            ${phases.join(" -> ")}`);
   console.log(`Parent Git SHA:    ${parentGitSha}`);
   console.log(`Allowed Paths:     ${allowedPaths.join(", ")}`);
   console.log(`Idempotency Key:   ${idempotencyKey}`);
@@ -63,7 +65,7 @@ async function main() {
     parentGitSha,
     idempotencyKey,
     repositoryId: "Outside_Orchestrator",
-    intent: `Execute live ${phase} phase in Tier 2 exe.dev sandbox`,
+    intent: `Execute live [${phases.join(", ")}] phase(s) in Tier 2 exe.dev sandbox`,
     acceptanceCriteria: ["Phase execution produces valid results within declared paths"],
     policyVersion: "v2.0",
     agentsMdSha256: "sha256-default-agents-md",
@@ -98,7 +100,7 @@ async function main() {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      phase,
+      phases,
       allowed_paths: allowedPaths,
       ttl_seconds: ttlSeconds,
       async: true
@@ -113,20 +115,28 @@ async function main() {
   console.log("✔ Dispatch accepted by Tier 1 control plane. Monitoring lifecycle...\n");
 
   let currentRun: any = null;
+  let finalData: any = null;
   const pollStart = Date.now();
-  while (Date.now() - pollStart < (ttlSeconds + 60) * 1000) {
+  while (Date.now() - pollStart < (ttlSeconds * phases.length + 120) * 1000) {
     await new Promise(r => setTimeout(r, 2000));
     try {
       const statusRes = await fetch(`${host}/v1/runs/${runId}`, {
         signal: AbortSignal.timeout(5000)
       });
       if (statusRes.ok) {
-        const data = (await statusRes.json()) as any;
-        currentRun = data.run;
+        finalData = (await statusRes.json()) as any;
+        currentRun = finalData.run;
+        const envelopes = finalData.phase_envelopes || [];
+        const envInfo = envelopes.length > 0
+          ? `| Envelopes: ${envelopes.map((e: any) => `${e.phase}:${e.outputs?.status || "pending"}`).join(", ")}`
+          : "";
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        process.stdout.write(`\r  [${elapsed}s] Phase: ${currentRun.phase.padEnd(16)} | State Version: ${currentRun.state_version}    `);
+        process.stdout.write(`\r  [${elapsed}s] Phase: ${currentRun.phase.padEnd(16)} | State Version: ${currentRun.state_version} ${envInfo}    `);
 
-        if (["clean_terminated", "quarantined"].includes(currentRun.phase)) {
+        const allCompleted = envelopes.length === phases.length && envelopes.every((e: any) => e.outputs?.status === "completed");
+        const anyFailed = envelopes.some((e: any) => e.outputs?.status === "failed") || currentRun.phase === "quarantined";
+
+        if ((allCompleted && currentRun.phase === "clean_terminated") || anyFailed) {
           console.log("\n");
           break;
         }
@@ -134,7 +144,6 @@ async function main() {
         console.warn(`\n[Poll Warning] Server returned status ${statusRes.status}`);
       }
     } catch (err: any) {
-      // Print glitch reason if not transient
       if (err.name !== "TimeoutError") {
         console.warn(`\n[Poll Warning] Network glitch: ${err.message}`);
       }
@@ -144,11 +153,17 @@ async function main() {
   const durationSec = ((Date.now() - startTime) / 1000).toFixed(1);
 
   console.log("=================================================================");
-  console.log(`Execution Finished in ${durationSec}s — Final Phase: ${currentRun?.phase?.toUpperCase()}`);
+  console.log(`Execution Finished in ${durationSec}s — Final State: ${currentRun?.phase?.toUpperCase()}`);
   console.log("=================================================================");
-  console.log(`Run ID:            ${runId}`);
+  console.log(`Run ID:              ${runId}`);
   console.log(`Final State Version: ${currentRun?.state_version}`);
-  console.log(`Status:            ${currentRun?.phase === "clean_terminated" ? "CLEAN_TERMINATED (Passed)" : "QUARANTINED / TERMINAL"}`);
+  console.log(`Status:              ${currentRun?.phase === "clean_terminated" ? "CLEAN_TERMINATED (Passed)" : "QUARANTINED / FAILED"}`);
+  if (finalData?.phase_envelopes?.length > 0) {
+    console.log("Phase Envelopes Recorded in Tier 3:");
+    for (const env of finalData.phase_envelopes) {
+      console.log(`  - [${env.phase.padEnd(8)}] attempt=${env.attempt} status=${env.outputs?.status ?? "unknown"} outputTreeSha=${env.outputs?.output_tree_sha?.substring(0, 16) ?? "none"}...`);
+    }
+  }
   console.log("=================================================================\n");
 }
 

@@ -35,7 +35,8 @@ test("canTransition validates phase transitions against policy rules", () => {
   assert.equal(sm.canTransition("in_progress", "quarantined"), true);
   assert.equal(sm.canTransition("evaluating", "quarantined"), true);
 
-  // Terminal states cannot transition anywhere
+  // Terminal states cannot transition anywhere except clean_terminated -> provisioning for multi-phase sequencing
+  assert.equal(sm.canTransition("clean_terminated", "provisioning"), true);
   assert.equal(sm.canTransition("clean_terminated", "created"), false);
   assert.equal(sm.canTransition("quarantined", "created"), false);
 });

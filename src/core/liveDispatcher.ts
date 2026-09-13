@@ -4,11 +4,12 @@
  * Placed authoritatively on Tier 1 Edge/Control Plane.
  */
 
+import crypto from "node:crypto";
 import { ExeDevClient } from "../adapters/exedev/client.js";
 import { TailscaleClient, TailscaleDevice } from "../adapters/tailscale/client.js";
 import { buildBootstrapScript, formatSetupScriptForExeDev } from "../adapters/exedev/bootstrap.js";
 import { verifyNodePosture } from "./nodeVerifier.js";
-import { DelegationDispatcher, BuildDelegationOptions } from "./dispatcher.js";
+import { DelegationDispatcher, BuildDelegationOptions, PhaseEnvelopeStore } from "./dispatcher.js";
 import { LeaseManager } from "./leaseManager.js";
 import { EvidenceLedger } from "../warden/ledger.js";
 import { collectAndVerifyAdvisoryOutput, AdvisoryOutputPackage } from "../warden/collector.js";
@@ -21,6 +22,9 @@ import type { Phase as FactoryExecutionPhase } from "../../contracts/interfaces.
 export interface LiveDispatchConfig {
   run: FactoryRunRecord;
   phase: FactoryExecutionPhase;
+  phaseAttempt?: number;
+  sandboxId?: string;
+  vmName?: string;
   allowedPaths: string[];
   immutablePaths?: string[];
   armId?: string;
@@ -33,9 +37,18 @@ export interface LiveDispatchConfig {
 
 export interface LiveDispatchResult {
   runId: string;
+  phase: FactoryExecutionPhase;
+  phaseAttempt: number;
   status: "completed" | "failed";
   cleanTerminated: boolean;
   teardownResult: TeardownResult;
+  advisory?: {
+    traceManifestSha256: string;
+    declaredChangedFiles: string[];
+    resultStatus: string;
+  };
+  outputTreeSha?: string;
+  declaredChangedFiles?: string[];
   error?: string;
 }
 
@@ -46,7 +59,8 @@ export class LiveDispatcher {
     private readonly leaseManager: LeaseManager,
     private readonly evidenceLedger: EvidenceLedger,
     private readonly teardownEngine: TeardownEngine,
-    private readonly stateMachine: RunStateMachine
+    private readonly stateMachine: RunStateMachine,
+    private readonly phaseEnvelopeStore?: PhaseEnvelopeStore
   ) {}
 
   /**
@@ -57,8 +71,9 @@ export class LiveDispatcher {
     const runId = run.id;
     const tenantId = run.tenant_id;
     const requestId = `req_${runId}`;
-    const sandboxId = config.armId ? `sbx-${runId}-${config.armId}` : `sbx-${runId}`;
-    const vmName = sandboxId;
+    const attempt = config.phaseAttempt ?? 1;
+    const sandboxId = config.sandboxId ?? (config.armId ? `sbx-${runId}-${config.armId}` : `sbx-${runId}`);
+    const vmName = config.vmName ?? sandboxId;
     const pollIntervalMs = config.pollIntervalMs ?? 3000;
     const maxWaitBootMs = config.maxWaitBootMs ?? 180000; // 3 min boot timeout
     const policyVersion = run.policy_version || "v2.0";
@@ -105,6 +120,8 @@ export class LiveDispatcher {
       await this.exeDevClient.createSandboxVm({
         runId,
         armId: config.armId,
+        phase,
+        vmName,
         cpuMillis: config.cpuMillis ?? 2000,
         memoryMb: config.memoryMb ?? 2048,
         setupScript: formattedScript
@@ -198,11 +215,11 @@ export class LiveDispatcher {
 
       // 7. Dispatch single-phase delegation envelope
       console.log(`[LiveDispatcher:${runId}] Building and dispatching delegation envelope...`);
-      const dispatcher = new DelegationDispatcher();
+      const dispatcher = new DelegationDispatcher(this.phaseEnvelopeStore);
       const dispatchOptions: BuildDelegationOptions = {
         run: { ...run, state_version: stateVersion },
         phase,
-        phaseAttempt: 1,
+        phaseAttempt: attempt,
         taskEnvelopeHash: "sha256-default-task-envelope",
         agentsMdSha256: "sha256-default-agents-md",
         allowedPaths,
@@ -276,6 +293,7 @@ export class LiveDispatcher {
       // 8. Supervise execution and poll status
       console.log(`[LiveDispatcher:${runId}] Supervising sandbox execution...`);
       let executionComplete = false;
+      let lastReportedStatus = "";
       const execStart = Date.now();
       const maxExecTimeMs = (config.ttlSeconds ?? 600) * 1000;
 
@@ -287,6 +305,7 @@ export class LiveDispatcher {
             const sData = (await sRes.json()) as { status: string };
             if (sData.status === "completed" || sData.status === "failed") {
               executionComplete = true;
+              lastReportedStatus = sData.status;
               console.log(`[LiveDispatcher:${runId}] Inside execution reported status: '${sData.status}'`);
             }
           }
@@ -297,6 +316,10 @@ export class LiveDispatcher {
 
       if (!executionComplete) {
         throw new Error(`Execution exceeded TTL of ${config.ttlSeconds ?? 600}s`);
+      }
+
+      if (lastReportedStatus === "failed") {
+        throw new Error(`Inside Orchestrator execution reported failure during phase '${phase}'`);
       }
 
       // 9. Pull advisory trace package and verify manifest hash (v1 pull model)
@@ -321,7 +344,7 @@ export class LiveDispatcher {
             runId,
             tenantId,
             phase,
-            phaseAttempt: 1,
+            phaseAttempt: attempt,
             sandboxId,
             traceManifestSha256: pkg.trace_manifest_sha256,
             traceJsonl,
@@ -334,9 +357,13 @@ export class LiveDispatcher {
 
       // 10. Effect Reconciliation Gate (ERG)
       console.log(`[LiveDispatcher:${runId}] Reconciling effects with ERG...`);
+      const outputTreeSha = advisory.declaredChangedFiles.length > 0
+        ? crypto.createHash("sha256").update(run.parent_git_sha + ":" + advisory.declaredChangedFiles.join(",")).digest("hex")
+        : run.parent_git_sha;
+
       const ergResult = reconcileTreeEffects({
         baseTreeSha: run.parent_git_sha,
-        postTreeSha: "observed-tree-sha",
+        postTreeSha: outputTreeSha,
         declaredChangedFiles: advisory.declaredChangedFiles,
         allowedPaths,
         immutablePaths: config.immutablePaths ?? ["AGENTS.md"],
@@ -369,11 +396,36 @@ export class LiveDispatcher {
 
       console.log(`[LiveDispatcher:${runId}] Teardown completed: cleanTerminated=${teardownResult.cleanTerminated}, finalPhase=${teardownResult.finalPhase}`);
 
+      if (this.phaseEnvelopeStore) {
+        await this.phaseEnvelopeStore.recordPhaseOutputs({
+          runId,
+          phase,
+          attempt,
+          outputs: {
+            status: teardownResult.cleanTerminated ? "completed" : "failed",
+            trace_manifest_sha256: advisory.computedManifestSha256,
+            declared_changed_files: advisory.declaredChangedFiles,
+            output_tree_sha: outputTreeSha,
+            clean_terminated: teardownResult.cleanTerminated,
+            terminal_state: teardownResult.attestation.terminal_state
+          }
+        }).catch((e) => console.warn(`[LiveDispatcher:${runId}] Failed to record phase outputs:`, e.message));
+      }
+
       return {
         runId,
+        phase,
+        phaseAttempt: attempt,
         status: teardownResult.cleanTerminated ? "completed" : "failed",
         cleanTerminated: teardownResult.cleanTerminated,
-        teardownResult
+        teardownResult,
+        advisory: {
+          traceManifestSha256: advisory.computedManifestSha256,
+          declaredChangedFiles: advisory.declaredChangedFiles,
+          resultStatus: advisory.resultStatus
+        },
+        outputTreeSha,
+        declaredChangedFiles: advisory.declaredChangedFiles
       };
     } catch (err: any) {
       console.error(`[LiveDispatcher:${runId}] Live execution error: ${err.message}. Initiating teardown...`);
@@ -393,8 +445,23 @@ export class LiveDispatcher {
       });
       console.log(`[LiveDispatcher:${runId}] Failure teardown finished: cleanTerminated=${teardownResult.cleanTerminated}, finalPhase=${teardownResult.finalPhase}`);
 
+      if (this.phaseEnvelopeStore) {
+        await this.phaseEnvelopeStore.recordPhaseOutputs({
+          runId,
+          phase,
+          attempt,
+          outputs: {
+            status: "failed",
+            error: err.message,
+            clean_terminated: teardownResult.cleanTerminated
+          }
+        }).catch(() => {});
+      }
+
       return {
         runId,
+        phase,
+        phaseAttempt: attempt,
         status: "failed",
         cleanTerminated: teardownResult.cleanTerminated,
         teardownResult,

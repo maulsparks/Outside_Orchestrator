@@ -30,6 +30,19 @@ export interface DispatchResult {
   envelopeHash: string;
 }
 
+export interface PhaseEnvelopeRecord {
+  id?: string;
+  run_id: string;
+  tenant_id: string;
+  phase: string;
+  attempt: number;
+  schema_version: string;
+  inputs: Record<string, unknown>;
+  outputs?: Record<string, unknown> | null;
+  envelope_hash: string;
+  created_at?: string;
+}
+
 export interface PhaseEnvelopeStore {
   recordPhaseEnvelope(params: {
     runId: string;
@@ -39,6 +52,13 @@ export interface PhaseEnvelopeStore {
     inputs: Record<string, unknown>;
     envelopeHash: string;
   }): Promise<void>;
+  recordPhaseOutputs(params: {
+    runId: string;
+    phase: string;
+    attempt: number;
+    outputs: Record<string, unknown>;
+  }): Promise<void>;
+  listPhaseEnvelopes(runId: string): Promise<PhaseEnvelopeRecord[]>;
 }
 
 export class SupabasePhaseEnvelopeStore implements PhaseEnvelopeStore {
@@ -66,16 +86,58 @@ export class SupabasePhaseEnvelopeStore implements PhaseEnvelopeStore {
       envelope_hash: params.envelopeHash
     });
   }
+
+  async recordPhaseOutputs(params: {
+    runId: string;
+    phase: string;
+    attempt: number;
+    outputs: Record<string, unknown>;
+  }): Promise<void> {
+    await this.client.update(
+      "phase_envelopes",
+      {
+        run_id: params.runId,
+        phase: params.phase,
+        attempt: params.attempt
+      },
+      {
+        outputs: params.outputs
+      }
+    );
+  }
+
+  async listPhaseEnvelopes(runId: string): Promise<PhaseEnvelopeRecord[]> {
+    const rows = await this.client.select<Record<string, unknown>>("phase_envelopes", {
+      eq: { run_id: runId },
+      order: "created_at.asc"
+    });
+    return rows.map((r) => ({
+      id: String(r.id),
+      run_id: String(r.run_id),
+      tenant_id: String(r.tenant_id),
+      phase: String(r.phase),
+      attempt: Number(r.attempt),
+      schema_version: String(r.schema_version ?? "v1"),
+      inputs: (r.inputs as Record<string, unknown>) ?? {},
+      outputs: (r.outputs as Record<string, unknown>) ?? null,
+      envelope_hash: String(r.envelope_hash),
+      created_at: r.created_at ? String(r.created_at) : undefined
+    }));
+  }
 }
 
 export class InMemoryPhaseEnvelopeStore implements PhaseEnvelopeStore {
   readonly envelopes: Array<{
+    id?: string;
     runId: string;
     tenantId: string;
     phase: string;
     attempt: number;
+    schemaVersion?: string;
     inputs: Record<string, unknown>;
+    outputs?: Record<string, unknown> | null;
     envelopeHash: string;
+    createdAt?: string;
   }> = [];
 
   async recordPhaseEnvelope(params: {
@@ -86,7 +148,47 @@ export class InMemoryPhaseEnvelopeStore implements PhaseEnvelopeStore {
     inputs: Record<string, unknown>;
     envelopeHash: string;
   }): Promise<void> {
-    this.envelopes.push({ ...params });
+    this.envelopes.push({
+      runId: params.runId,
+      tenantId: params.tenantId,
+      phase: params.phase,
+      attempt: params.attempt,
+      inputs: params.inputs,
+      outputs: null,
+      envelopeHash: params.envelopeHash,
+      createdAt: new Date().toISOString()
+    });
+  }
+
+  async recordPhaseOutputs(params: {
+    runId: string;
+    phase: string;
+    attempt: number;
+    outputs: Record<string, unknown>;
+  }): Promise<void> {
+    const env = this.envelopes.find(
+      (e) => e.runId === params.runId && e.phase === params.phase && e.attempt === params.attempt
+    );
+    if (env) {
+      env.outputs = params.outputs;
+    }
+  }
+
+  async listPhaseEnvelopes(runId: string): Promise<PhaseEnvelopeRecord[]> {
+    return this.envelopes
+      .filter((e) => e.runId === runId)
+      .map((e) => ({
+        id: e.id,
+        run_id: e.runId,
+        tenant_id: e.tenantId,
+        phase: e.phase,
+        attempt: e.attempt,
+        schema_version: e.schemaVersion ?? "v1",
+        inputs: e.inputs,
+        outputs: e.outputs ?? null,
+        envelope_hash: e.envelopeHash,
+        created_at: e.createdAt
+      }));
   }
 }
 

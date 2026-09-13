@@ -15,7 +15,7 @@ export const ALLOWED_TRANSITIONS: Record<Phase, readonly Phase[]> = {
   in_progress: ["evaluating", "quarantined", "terminal"],
   evaluating: ["terminal", "quarantined"],
   terminal: ["clean_terminated", "quarantined"],
-  clean_terminated: [],
+  clean_terminated: ["provisioning", "quarantined"],
   quarantined: []
 };
 

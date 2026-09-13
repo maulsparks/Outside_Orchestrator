@@ -1,6 +1,8 @@
 export interface CreateVmConfig {
   runId: string;
   armId?: string;
+  phase?: string;
+  vmName?: string;
   cpuMillis?: number;
   memoryMb?: number;
   ttlSeconds?: number;
@@ -59,7 +61,11 @@ export class ExeDevClient {
   async createSandboxVm(config: CreateVmConfig): Promise<ExeDevVm> {
     this.assertApiKey();
 
-    const vmName = config.armId ? `sbx-${config.runId}-${config.armId}` : `sbx-${config.runId}`;
+    const vmName = config.vmName ?? (
+      config.armId
+        ? (config.phase ? `sbx-${config.runId}-${config.armId}-${config.phase}` : `sbx-${config.runId}-${config.armId}`)
+        : (config.phase ? `sbx-${config.runId}-${config.phase}` : `sbx-${config.runId}`)
+    );
     const cpuCores = Math.max(1, Math.ceil((config.cpuMillis ?? 2000) / 1000));
     const memoryGb = Math.max(1, Math.ceil((config.memoryMb ?? 2048) / 1024));
 
