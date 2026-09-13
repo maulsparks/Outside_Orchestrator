@@ -123,7 +123,19 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-      const body = await parseJsonBody<CreateRunRequest>(req);
+      const rawBody = await parseJsonBody<any>(req);
+      const body: CreateRunRequest = {
+        requestId: rawBody.requestId || rawBody.request_id,
+        idempotencyKey: rawBody.idempotencyKey || rawBody.idempotency_key,
+        tenantId: rawBody.tenantId || rawBody.tenant_id,
+        repositoryId: rawBody.repositoryId || rawBody.repository_id || "repo-default",
+        parentGitSha: rawBody.parentGitSha || rawBody.parent_git_sha,
+        intent: rawBody.intent || "execute",
+        acceptanceCriteria: rawBody.acceptanceCriteria || rawBody.acceptance_criteria || (rawBody.envelope?.acceptance_criteria) || ["Valid phase result"],
+        policyVersion: rawBody.policyVersion || rawBody.policy_version || "v2.0",
+        agentsMdSha256: rawBody.agentsMdSha256 || rawBody.agents_md_sha256 || "sha256-default",
+        budgetCents: rawBody.budgetCents || rawBody.budget_cents || (rawBody.budget?.max_cost_cents) || 500
+      };
       const result = await admissionEngine.admitRequest(body);
       const statusCode = result.isExisting ? 200 : 201;
 

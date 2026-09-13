@@ -59,16 +59,15 @@ async function main() {
   // 2. Intake Admission
   console.log("[2/3] Admitting run request...");
   const intakePayload = {
-    tenant_id: tenantId,
-    parent_git_sha: parentGitSha,
-    idempotency_key: idempotencyKey,
-    budget: { max_cost_cents: 500 },
-    envelope: {
-      schema_version: "v1",
-      allowed_paths: allowedPaths,
-      immutable_paths: ["AGENTS.md"],
-      acceptance_criteria: ["Phase execution produces valid results within declared paths"]
-    }
+    tenantId,
+    parentGitSha,
+    idempotencyKey,
+    repositoryId: "Outside_Orchestrator",
+    intent: `Execute live ${phase} phase in Tier 2 exe.dev sandbox`,
+    acceptanceCriteria: ["Phase execution produces valid results within declared paths"],
+    policyVersion: "v2.0",
+    agentsMdSha256: "sha256-default-agents-md",
+    budgetCents: 500
   };
 
   const admitRes = await fetch(`${host}/v1/runs`, {
