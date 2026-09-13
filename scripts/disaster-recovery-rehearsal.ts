@@ -70,14 +70,14 @@ async function runRehearsal() {
       "SUPABASE_SERVICE_ROLE_KEY",
       "TAILSCALE_CLIENT_ID",
       "TAILSCALE_CLIENT_SECRET",
-      "TAILSCALE_TAILNET",
       "EXEDEV_API_KEY"
     ];
     const missing = requiredVars.filter((v) => !process.env[v]);
     if (missing.length > 0) {
       throw new Error(`Missing mandatory environment variables: ${missing.join(", ")}`);
     }
-    return `All 6 core provider credentials configured (${process.env.TAILSCALE_TAILNET})`;
+    const tailnet = process.env.TAILSCALE_TAILNET || "-";
+    return `Core provider credentials configured (tailnet: ${tailnet})`;
   });
 
   // Gate 2: Warden Keypair & Cryptographic Capability
@@ -143,7 +143,7 @@ async function runRehearsal() {
 
   // Gate 6: Simulated Crash State Recovery & Monotonic Fencing Test
   await executeStep("6/6", "Executing Orchestrator Restart & State Reacquisition Rehearsal", async () => {
-    const simRunId = `rehearse-dr-${Date.now()}`;
+    const simRunId = crypto.randomUUID();
     const simTenantId = "tenant-dr-rehearsal";
 
     // 1. Create simulated interrupted run directly in runsRepo
