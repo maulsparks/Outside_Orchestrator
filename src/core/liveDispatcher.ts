@@ -17,6 +17,7 @@ import { reconcileTreeEffects } from "./erg.js";
 import { executeFrozenTestSuite } from "./harvest.js";
 import { TeardownEngine, TeardownResult } from "./teardownEngine.js";
 import { RunStateMachine, FactoryRunRecord } from "./stateMachine.js";
+import { PolicyIntegrityVerifier } from "./policyIntegrity.js";
 import type { Phase as FactoryExecutionPhase } from "../../contracts/interfaces.js";
 
 export interface LiveDispatchConfig {
@@ -28,6 +29,8 @@ export interface LiveDispatchConfig {
   allowedPaths: string[];
   immutablePaths?: string[];
   armId?: string;
+  agentsMdSha256?: string;
+  agentsMdContent?: string;
   cpuMillis?: number;
   memoryMb?: number;
   ttlSeconds?: number;
@@ -53,6 +56,8 @@ export interface LiveDispatchResult {
 }
 
 export class LiveDispatcher {
+  private readonly policyVerifier: PolicyIntegrityVerifier;
+
   constructor(
     private readonly exeDevClient: ExeDevClient,
     private readonly tailscaleClient: TailscaleClient,
@@ -60,8 +65,11 @@ export class LiveDispatcher {
     private readonly evidenceLedger: EvidenceLedger,
     private readonly teardownEngine: TeardownEngine,
     private readonly stateMachine: RunStateMachine,
-    private readonly phaseEnvelopeStore?: PhaseEnvelopeStore
-  ) {}
+    private readonly phaseEnvelopeStore?: PhaseEnvelopeStore,
+    policyVerifier?: PolicyIntegrityVerifier
+  ) {
+    this.policyVerifier = policyVerifier ?? new PolicyIntegrityVerifier(evidenceLedger);
+  }
 
   /**
    * Executes a complete live sandbox attempt from provisioning to clean teardown.
@@ -86,6 +94,17 @@ export class LiveDispatcher {
 
     try {
       console.log(`[LiveDispatcher:${runId}] Starting live execution: phase='${phase}', sandbox='${sandboxId}'`);
+
+      // 0. Pre-flight policy & AGENTS.md integrity verification (Contract §6.2, §7.1, §8)
+      console.log(`[LiveDispatcher:${runId}] Verifying pre-flight policy and AGENTS.md integrity...`);
+      await this.policyVerifier.verifyPhasePreflight({
+        run,
+        phase,
+        attempt,
+        currentAgentsMdSha256: config.agentsMdSha256,
+        currentAgentsMdContent: config.agentsMdContent,
+        sandboxId
+      });
 
       // 1. Advance phase to provisioning in Tier 3
       const provTransition = await this.stateMachine.transition({
@@ -216,12 +235,17 @@ export class LiveDispatcher {
       // 7. Dispatch single-phase delegation envelope
       console.log(`[LiveDispatcher:${runId}] Building and dispatching delegation envelope...`);
       const dispatcher = new DelegationDispatcher(this.phaseEnvelopeStore);
+
+      const resolvedAgentsMdSha256 = (run.envelope as Record<string, unknown>)?.agents_md_sha256
+        ? String((run.envelope as Record<string, unknown>).agents_md_sha256)
+        : (config.agentsMdSha256 ?? "0".repeat(64));
+
       const dispatchOptions: BuildDelegationOptions = {
         run: { ...run, state_version: stateVersion },
         phase,
         phaseAttempt: attempt,
         taskEnvelopeHash: "sha256-default-task-envelope",
-        agentsMdSha256: "sha256-default-agents-md",
+        agentsMdSha256: resolvedAgentsMdSha256,
         allowedPaths,
         immutablePaths: config.immutablePaths ?? ["AGENTS.md"],
         acceptanceCriteria: ["Phase outputs valid results within allowed paths"],
@@ -429,6 +453,37 @@ export class LiveDispatcher {
       };
     } catch (err: any) {
       console.error(`[LiveDispatcher:${runId}] Live execution error: ${err.message}. Initiating teardown...`);
+
+      if (currentPhase === "created") {
+        await this.stateMachine.transition({
+          runId,
+          tenantId,
+          expectedPhase: "created",
+          targetPhase: "quarantined",
+          expectedStateVersion: stateVersion,
+          fencingToken: leaseToken,
+          eventType: "run_quarantined",
+          eventPayload: { reason: err.message }
+        }).catch(() => {});
+
+        return {
+          runId,
+          phase,
+          phaseAttempt: attempt,
+          status: "failed",
+          cleanTerminated: false,
+          teardownResult: {
+            runId,
+            cleanTerminated: false,
+            finalPhase: "quarantined",
+            attestation: {} as any,
+            evaluation: { passed: false, violations: ["not_provisioned"] },
+            probeSummary: { targetIp: nodeIp, allUnreachable: true, probes: [] }
+          },
+          error: err.message
+        };
+      }
+
       // Execute teardown across any failure flow
       const teardownResult = await this.teardownEngine.executeTeardown({
         runId,

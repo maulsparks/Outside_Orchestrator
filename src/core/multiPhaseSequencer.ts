@@ -17,6 +17,8 @@ export interface MultiPhaseSequenceConfig {
   allowedPaths: string[];
   immutablePaths?: string[];
   armId?: string;
+  agentsMdSha256?: string;
+  agentsMdContent?: string;
   cpuMillis?: number;
   memoryMb?: number;
   ttlSeconds?: number;
@@ -97,6 +99,8 @@ export class MultiPhaseSequencer {
         allowedPaths,
         immutablePaths: config.immutablePaths ?? ["AGENTS.md"],
         armId: config.armId,
+        agentsMdSha256: config.agentsMdSha256,
+        agentsMdContent: config.agentsMdContent,
         cpuMillis: config.cpuMillis,
         memoryMb: config.memoryMb,
         ttlSeconds: config.ttlSeconds,

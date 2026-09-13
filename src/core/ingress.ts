@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { validateRequestShape } from "./intake.js";
 import { LeaseManager } from "./leaseManager.js";
 import { FactoryRunRecord, RunStateStore } from "./stateMachine.js";
+import { PolicyIntegrityVerifier, computeAgentsMdSha256 } from "./policyIntegrity.js";
 
 export interface CreateRunRequest {
   requestId?: string;
@@ -12,7 +13,8 @@ export interface CreateRunRequest {
   intent: string;
   acceptanceCriteria: string[];
   policyVersion: string;
-  agentsMdSha256: string;
+  agentsMdSha256?: string;
+  agentsMdContent?: string;
   budgetCents: number;
 }
 
@@ -37,10 +39,12 @@ export interface AdmissionResult {
 export class RequestAdmissionEngine {
   private readonly runsRepo: IngressRunRepository;
   private readonly leaseManager: LeaseManager;
+  private readonly policyVerifier: PolicyIntegrityVerifier;
 
-  constructor(runsRepo: IngressRunRepository, leaseManager: LeaseManager) {
+  constructor(runsRepo: IngressRunRepository, leaseManager: LeaseManager, policyVerifier?: PolicyIntegrityVerifier) {
     this.runsRepo = runsRepo;
     this.leaseManager = leaseManager;
+    this.policyVerifier = policyVerifier ?? new PolicyIntegrityVerifier();
   }
 
   /**
@@ -50,7 +54,23 @@ export class RequestAdmissionEngine {
   async admitRequest(req: CreateRunRequest): Promise<AdmissionResult> {
     const requestId = req.requestId ?? `req-${crypto.randomUUID()}`;
 
-    // 1. Validate request shape according to intake contract
+    // Resolve or compute agentsMdSha256
+    let agentsMdSha256 = req.agentsMdSha256;
+    if (!agentsMdSha256 && req.agentsMdContent !== undefined) {
+      agentsMdSha256 = computeAgentsMdSha256(req.agentsMdContent);
+    }
+    if (!agentsMdSha256) {
+      agentsMdSha256 = "0".repeat(64);
+    }
+
+    // 1. Verify policy version, format, and check for authority violations
+    this.policyVerifier.verifyAdmissionRequest({
+      policyVersion: req.policyVersion,
+      agentsMdSha256,
+      agentsMdContent: req.agentsMdContent
+    });
+
+    // 2. Validate request shape according to intake contract
     validateRequestShape({
       request_id: requestId,
       idempotency_key: req.idempotencyKey,
@@ -60,7 +80,7 @@ export class RequestAdmissionEngine {
       intent: req.intent,
       acceptance_criteria: req.acceptanceCriteria,
       policy_version: req.policyVersion,
-      agents_md_sha256: req.agentsMdSha256,
+      agents_md_sha256: agentsMdSha256,
       budget_cents: req.budgetCents
     });
 
@@ -89,7 +109,7 @@ export class RequestAdmissionEngine {
         intent: req.intent,
         acceptance_criteria: req.acceptanceCriteria,
         repository_id: req.repositoryId,
-        agents_md_sha256: req.agentsMdSha256
+        agents_md_sha256: agentsMdSha256
       }
     };
 

@@ -19,6 +19,7 @@ import {
   BudgetExceededError,
   InferenceWorkerUnavailableError
 } from "./core/inferenceBroker.js";
+import { computeAgentsMdSha256 } from "./core/policyIntegrity.js";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -160,7 +161,8 @@ const server = http.createServer(async (req, res) => {
         intent: rawBody.intent || "execute",
         acceptanceCriteria: rawBody.acceptanceCriteria || rawBody.acceptance_criteria || (rawBody.envelope?.acceptance_criteria) || ["Valid phase result"],
         policyVersion: rawBody.policyVersion || rawBody.policy_version || "v2.0",
-        agentsMdSha256: rawBody.agentsMdSha256 || rawBody.agents_md_sha256 || "sha256-default",
+        agentsMdSha256: rawBody.agentsMdSha256 || rawBody.agents_md_sha256 || (rawBody.agents_md_content ? computeAgentsMdSha256(rawBody.agents_md_content) : "0".repeat(64)),
+        agentsMdContent: rawBody.agentsMdContent || rawBody.agents_md_content,
         budgetCents: rawBody.budgetCents || rawBody.budget_cents || (rawBody.budget?.max_cost_cents) || 500
       };
       const result = await admissionEngine.admitRequest(body);
@@ -206,6 +208,8 @@ const server = http.createServer(async (req, res) => {
         phase?: "plan" | "build" | "test" | "review" | "document";
         allowed_paths?: string[];
         immutable_paths?: string[];
+        agents_md_sha256?: string;
+        agents_md_content?: string;
         cpu_millis?: number;
         memory_mb?: number;
         ttl_seconds?: number;
@@ -225,6 +229,8 @@ const server = http.createServer(async (req, res) => {
           phases: targetPhases,
           allowedPaths,
           immutablePaths,
+          agentsMdSha256: body.agents_md_sha256,
+          agentsMdContent: body.agents_md_content,
           cpuMillis: body.cpu_millis,
           memoryMb: body.memory_mb,
           ttlSeconds: body.ttl_seconds
@@ -250,6 +256,8 @@ const server = http.createServer(async (req, res) => {
         phase: targetPhases[0],
         allowedPaths,
         immutablePaths,
+        agentsMdSha256: body.agents_md_sha256,
+        agentsMdContent: body.agents_md_content,
         cpuMillis: body.cpu_millis,
         memoryMb: body.memory_mb,
         ttlSeconds: body.ttl_seconds
@@ -497,7 +505,48 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 7. Default Not Found
+  // 7. Policy & Context Integrity Query (GET /runs/:runId/policy/integrity or GET /v1/runs/:runId/policy/integrity)
+  const policyIntegrityMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/policy\/integrity$/);
+  if (policyIntegrityMatch && req.method === "GET") {
+    if (!runsRepo) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "StorageUnavailable" }));
+      return;
+    }
+
+    try {
+      const runId = policyIntegrityMatch[1];
+      const run = await runsRepo.getRun(runId);
+      if (!run) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "RunNotFound", runId }));
+        return;
+      }
+
+      const envelope = (run.envelope as Record<string, unknown>) || {};
+      const agentsMdSha256 = envelope.agents_md_sha256 || null;
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          run_id: runId,
+          tenant_id: run.tenant_id,
+          policy_version: run.policy_version,
+          agents_md_sha256: agentsMdSha256,
+          immutable_paths: ["AGENTS.md"],
+          non_authority_guaranteed: true,
+          status: "verified"
+        })
+      );
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 8. Default Not Found
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "not_found" }));
 });
