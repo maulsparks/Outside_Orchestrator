@@ -23,6 +23,33 @@ export class SupabaseRunStateStore implements RunStateStore {
     });
   }
 
+  async findByIdempotencyKey(tenantId: string, idempotencyKey: string): Promise<FactoryRunRecord | null> {
+    const rows = await this.client.select<Record<string, unknown>>("factory_runs", {
+      eq: { tenant_id: tenantId, idempotency_key: idempotencyKey },
+      limit: 1
+    });
+
+    if (rows.length === 0) {
+      return null;
+    }
+
+    const r = rows[0];
+    return {
+      id: String(r.id),
+      tenant_id: String(r.tenant_id),
+      request_id: String(r.request_id),
+      idempotency_key: String(r.idempotency_key),
+      parent_git_sha: String(r.parent_git_sha),
+      policy_version: String(r.policy_version),
+      phase: r.phase as Phase,
+      state_version: Number(r.state_version),
+      budget: (r.budget as Record<string, unknown>) ?? {},
+      envelope: (r.envelope as Record<string, unknown>) ?? {},
+      created_at: r.created_at ? String(r.created_at) : undefined,
+      updated_at: r.updated_at ? String(r.updated_at) : undefined
+    };
+  }
+
   async getRun(runId: string): Promise<FactoryRunRecord | null> {
     const rows = await this.client.select<Record<string, unknown>>("factory_runs", {
       eq: { id: runId },

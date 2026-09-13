@@ -1,0 +1,107 @@
+import crypto from "node:crypto";
+import { validateRequestShape } from "./intake.js";
+import { LeaseManager } from "./leaseManager.js";
+import { FactoryRunRecord, RunStateStore } from "./stateMachine.js";
+
+export interface CreateRunRequest {
+  requestId?: string;
+  idempotencyKey: string;
+  tenantId: string;
+  repositoryId: string;
+  parentGitSha: string;
+  intent: string;
+  acceptanceCriteria: string[];
+  policyVersion: string;
+  agentsMdSha256: string;
+  budgetCents: number;
+}
+
+export interface IngressRunRepository extends RunStateStore {
+  createRun(run: FactoryRunRecord): Promise<void>;
+  findByIdempotencyKey(tenantId: string, idempotencyKey: string): Promise<FactoryRunRecord | null>;
+}
+
+export interface AdmissionResult {
+  isExisting: boolean;
+  run: FactoryRunRecord;
+  lease?: {
+    fencingToken: number;
+    expiresAt: Date;
+  };
+}
+
+/**
+ * Request Admission Engine (ISSUE-12 / AC 1)
+ * Validates request schema, enforces idempotency keys, and initial lease acquisition.
+ */
+export class RequestAdmissionEngine {
+  private readonly runsRepo: IngressRunRepository;
+  private readonly leaseManager: LeaseManager;
+
+  constructor(runsRepo: IngressRunRepository, leaseManager: LeaseManager) {
+    this.runsRepo = runsRepo;
+    this.leaseManager = leaseManager;
+  }
+
+  /**
+   * Admits an incoming work request.
+   * Duplicate idempotency keys return existing run without creating untracked duplicates.
+   */
+  async admitRequest(req: CreateRunRequest): Promise<AdmissionResult> {
+    const requestId = req.requestId ?? `req-${crypto.randomUUID()}`;
+
+    // 1. Validate request shape according to intake contract
+    validateRequestShape({
+      request_id: requestId,
+      idempotency_key: req.idempotencyKey,
+      tenant_id: req.tenantId,
+      repository_id: req.repositoryId,
+      parent_git_sha: req.parentGitSha,
+      intent: req.intent,
+      acceptance_criteria: req.acceptanceCriteria,
+      policy_version: req.policyVersion,
+      agents_md_sha256: req.agentsMdSha256,
+      budget_cents: req.budgetCents
+    });
+
+    // 2. Check for duplicate idempotency key
+    const existing = await this.runsRepo.findByIdempotencyKey(req.tenantId, req.idempotencyKey);
+    if (existing) {
+      return {
+        isExisting: true,
+        run: existing
+      };
+    }
+
+    // 3. Create fresh run
+    const runId = crypto.randomUUID();
+    const run: FactoryRunRecord = {
+      id: runId,
+      tenant_id: req.tenantId,
+      request_id: requestId,
+      idempotency_key: req.idempotencyKey,
+      parent_git_sha: req.parentGitSha,
+      policy_version: req.policyVersion,
+      phase: "created",
+      state_version: 1,
+      budget: { max_cost_cents: req.budgetCents },
+      envelope: {
+        intent: req.intent,
+        acceptance_criteria: req.acceptanceCriteria,
+        repository_id: req.repositoryId,
+        agents_md_sha256: req.agentsMdSha256
+      }
+    };
+
+    await this.runsRepo.createRun(run);
+
+    // 4. Acquire initial lease
+    const lease = await this.leaseManager.acquireLease(runId, req.tenantId, 900000); // 15 minutes
+
+    return {
+      isExisting: false,
+      run,
+      lease
+    };
+  }
+}
