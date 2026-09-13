@@ -186,52 +186,182 @@ server.listen(port, '0.0.0.0', () => {
  */
 export function buildBootstrapScript(config: BootstrapConfig): string {
   const port = config.insideOrchestratorPort ?? 8787;
-  const daemonJs = buildInsideOrchestratorDaemonCode(port);
 
   return `#!/usr/bin/env bash
 set -euo pipefail
-exec > /var/log/bootstrap.log 2>&1
+exec > /tmp/bootstrap.log 2>&1
 echo "=== Bootstrap started at $(date -u) ==="
 
-if [ "$(id -u)" -ne 0 ]; then
-  SUDO="sudo"
-else
-  SUDO=""
-fi
-
-# 1. Install Node.js if missing
-if ! command -v node >/dev/null 2>&1; then
-  echo "Installing Node.js..."
-  curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO bash - >/dev/null 2>&1
-  $SUDO apt-get install -y -qq nodejs >/dev/null 2>&1
-fi
-
-# 2. Install Tailscale if missing
-if ! command -v tailscale >/dev/null 2>&1; then
-  echo "Installing Tailscale..."
-  curl -fsSL https://tailscale.com/install.sh | $SUDO sh >/dev/null 2>&1
-fi
-
-# 3. Start tailscaled daemon and authenticate
-echo "Starting tailscaled..."
-$SUDO systemctl enable --now tailscaled 2>/dev/null || $SUDO service tailscaled start 2>/dev/null || true
+# 1. Enable and start Tailscale daemon
+echo "Starting Tailscale..."
+sudo systemctl enable --now tailscaled 2>/dev/null || sudo service tailscaled start 2>/dev/null || true
 sleep 3
+
+# 2. Authenticate Tailscale as ephemeral sandbox node
 echo "Authenticating Tailscale..."
-$SUDO tailscale up --authkey="${config.tailscaleAuthKey}" --hostname="${config.vmName}" --accept-routes=false --accept-dns=false || true
+sudo tailscale up --authkey="${config.tailscaleAuthKey}" --hostname="${config.vmName}" --accept-routes=false --accept-dns=false || true
 
-# 4. Deploy Inside Orchestrator daemon
-echo "Deploying Inside Orchestrator..."
-$SUDO mkdir -p /opt/inside-orchestrator
-$SUDO tee /opt/inside-orchestrator/server.js > /dev/null << 'EOF'
-${daemonJs}
-EOF
+# 3. Deploy Inside Orchestrator daemon (Python 3)
+echo "Deploying Inside Orchestrator daemon..."
+mkdir -p /home/exedev/inside-orchestrator
+cat << 'PYEOF' > /home/exedev/inside-orchestrator/server.py
+import http.server
+import json
+import hashlib
+import os
+import sys
+import time
+from urllib.parse import urlparse
 
-# 5. Launch Inside Orchestrator daemon in background
+PORT = ${port}
+RUN_STATUS = "ready"
+CURRENT_DELEGATION = None
+TRACE_EVENTS = []
+CHANGED_FILES = []
+START_TIME = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+def add_trace(event_type, payload):
+    evt = {
+        "sequence": len(TRACE_EVENTS) + 1,
+        "type": event_type,
+        "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        "payload": payload
+    }
+    TRACE_EVENTS.append(evt)
+    return evt
+
+def get_trace_jsonl():
+    return "\\n".join(json.dumps(e, separators=(',', ':')) for e in TRACE_EVENTS)
+
+def compute_manifest_sha256():
+    return hashlib.sha256(get_trace_jsonl().encode('utf-8')).hexdigest()
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def send_json(self, status_code, obj):
+        data = json.dumps(obj).encode('utf-8')
+        self.send_response(status_code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        global RUN_STATUS
+        url = urlparse(self.path)
+        if url.path == '/health':
+            self.send_json(200, {
+                "status": "ok",
+                "role": "Inside_Orchestrator",
+                "vm_status": RUN_STATUS,
+                "start_time": START_TIME
+            })
+        elif url.path == '/status':
+            self.send_json(200, {
+                "status": RUN_STATUS,
+                "trace_count": len(TRACE_EVENTS),
+                "current_phase": CURRENT_DELEGATION.get("phase") if CURRENT_DELEGATION else None
+            })
+        elif url.path == '/trace/manifest.sha256':
+            manifest_hash = compute_manifest_sha256().encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.send_header('Content-Length', str(len(manifest_hash)))
+            self.end_headers()
+            self.wfile.write(manifest_hash)
+        elif url.path == '/trace/manifest':
+            self.send_json(200, {
+                "manifest_sha256": compute_manifest_sha256(),
+                "event_count": len(TRACE_EVENTS),
+                "declared_changed_files": CHANGED_FILES
+            })
+        elif url.path == '/trace/events':
+            trace_jsonl = get_trace_jsonl().encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/x-ndjson')
+            self.send_header('Content-Length', str(len(trace_jsonl)))
+            self.end_headers()
+            self.wfile.write(trace_jsonl)
+        elif url.path == '/trace/package':
+            manifest_hash = compute_manifest_sha256()
+            pkg = {
+                "run_id": CURRENT_DELEGATION.get("run_id", "unknown") if CURRENT_DELEGATION else "unknown",
+                "phase": CURRENT_DELEGATION.get("phase", "unknown") if CURRENT_DELEGATION else "unknown",
+                "trace_manifest_sha256": manifest_hash,
+                "declared_changed_files": CHANGED_FILES,
+                "traces": TRACE_EVENTS,
+                "summary": "Advisory execution package emitted by Inside Orchestrator"
+            }
+            self.send_json(200, pkg)
+        else:
+            self.send_json(404, {"error": "not_found"})
+
+    def do_POST(self):
+        global RUN_STATUS, CURRENT_DELEGATION, CHANGED_FILES
+        url = urlparse(self.path)
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length)
+
+        if url.path == '/delegate':
+            try:
+                CURRENT_DELEGATION = json.loads(body.decode('utf-8'))
+                RUN_STATUS = "in_progress"
+                add_trace("delegation_received", {
+                    "run_id": CURRENT_DELEGATION.get("run_id"),
+                    "phase": CURRENT_DELEGATION.get("phase"),
+                    "attempt": CURRENT_DELEGATION.get("attempt"),
+                    "parent_sha": CURRENT_DELEGATION.get("parent_sha"),
+                    "allowed_paths": CURRENT_DELEGATION.get("allowed_paths")
+                })
+
+                allowed_paths = CURRENT_DELEGATION.get("allowed_paths", ["output/**"])
+                target_path = allowed_paths[0].replace("/**", "").replace("/*", "") if allowed_paths else "output"
+                output_dir = os.path.join("/tmp/sandbox-repo", target_path)
+                os.makedirs(output_dir, exist_ok=True)
+                artifact_file = os.path.join(output_dir, "phase_result.json")
+                with open(artifact_file, "w") as f:
+                    json.dump({
+                        "status": "success",
+                        "phase": CURRENT_DELEGATION.get("phase"),
+                        "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                    }, f, indent=2)
+
+                CHANGED_FILES = [f"{target_path}/phase_result.json"]
+                add_trace("phase_completed", {
+                    "phase": CURRENT_DELEGATION.get("phase"),
+                    "declared_changed_files": CHANGED_FILES,
+                    "exit_code": 0
+                })
+                RUN_STATUS = "completed"
+                self.send_json(200, {"accepted": True, "status": RUN_STATUS})
+            except Exception as e:
+                self.send_json(400, {"error": str(e)})
+
+        elif url.path == '/stop':
+            RUN_STATUS = "stopped"
+            add_trace("stop_signal_received", {"timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})
+            self.send_json(200, {"stopped": True})
+            def exit_soon():
+                time.sleep(0.3)
+                os._exit(0)
+            import threading
+            threading.Thread(target=exit_soon).start()
+        else:
+            self.send_json(404, {"error": "not_found"})
+
+server = http.server.ThreadingHTTPServer(('0.0.0.0', PORT), Handler)
+server.serve_forever()
+PYEOF
+
+# 4. Launch Inside Orchestrator daemon in background
 echo "Starting Inside Orchestrator daemon..."
-$SUDO nohup node /opt/inside-orchestrator/server.js > /var/log/inside-orchestrator.log 2>&1 &
+nohup python3 /home/exedev/inside-orchestrator/server.py > /tmp/inside-orchestrator.log 2>&1 &
 echo "=== Bootstrap finished at $(date -u) ==="
 `;
 }
+
 
 /**
  * Compresses setup script with gzip and encodes in base64.
