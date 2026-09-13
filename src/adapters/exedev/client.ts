@@ -124,7 +124,7 @@ export class ExeDevClient {
   }
 
   /**
-   * Executes a remote command inside the VM.
+   * Executes a remote command inside the VM via exe.dev HTTPS API ('ssh <vm> <command>').
    */
   async execCommand(
     vmName: string,
@@ -138,16 +138,19 @@ export class ExeDevClient {
         "Authorization": `Bearer ${this.apiKey}`,
         "Content-Type": "text/plain"
       },
-      body: `exec ${vmName} -- ${command}`
+      body: `ssh ${vmName} ${command}`
     });
 
     const text = await res.text();
+    const exitHeader = res.headers.get("x-exe-exit");
+    const exitCode = exitHeader !== null ? parseInt(exitHeader, 10) : (res.ok ? 0 : 1);
     return {
       stdout: text,
       stderr: res.ok ? "" : text,
-      exitCode: res.ok ? 0 : 1
+      exitCode
     };
   }
+
 
   /**
    * Destroys the disposable VM and its persistent disk cleanly.
