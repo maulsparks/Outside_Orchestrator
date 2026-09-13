@@ -8,6 +8,7 @@ import { signBoundaryEvent } from "../warden/signer.js";
 import { collectAndVerifyAdvisoryOutput, AdvisoryOutputPackage } from "../warden/collector.js";
 import { evaluateCleanTerminated, AttestationEvaluationResult } from "./attestation.js";
 import { probeFormerSandboxEndpoints, EndpointProbeSummary } from "../warden/networkProber.js";
+import { metrics } from "./metrics.js";
 
 export class TerminalStateError extends Error {
   constructor(message: string) {
@@ -380,6 +381,9 @@ export class TeardownEngine {
         attestation
       }
     });
+
+    metrics.sandboxesDestroyedTotal.inc({ reason: evaluation.passed ? "success" : "failure" });
+    metrics.teardownAttestationsTotal.inc({ status: finalPhase });
 
     return {
       runId: params.runId,

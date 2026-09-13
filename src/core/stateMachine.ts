@@ -1,3 +1,5 @@
+import { metrics } from "./metrics.js";
+
 export type Phase =
   | "created"
   | "provisioning"
@@ -150,65 +152,80 @@ export class RunStateMachine {
    * Executes a guarded phase transition using Compare-And-Swap.
    */
   async transition(req: TransitionRequest): Promise<TransitionResult> {
-    const current = await this.store.getRun(req.runId);
-    if (!current) {
-      throw new Error(`RunNotFoundError: Run ${req.runId} not found`);
-    }
+    try {
+      const current = await this.store.getRun(req.runId);
+      if (!current) {
+        throw new Error(`RunNotFoundError: Run ${req.runId} not found`);
+      }
 
-    if (current.tenant_id !== req.tenantId) {
-      throw new Error(`TenantMismatchError: Request tenant ${req.tenantId} != run tenant ${current.tenant_id}`);
-    }
+      if (current.tenant_id !== req.tenantId) {
+        throw new Error(`TenantMismatchError: Request tenant ${req.tenantId} != run tenant ${current.tenant_id}`);
+      }
 
-    if (current.phase !== req.expectedPhase) {
-      throw new Error(
-        `PhaseConflictError: Expected phase '${req.expectedPhase}', but run is currently at phase '${current.phase}'`
+      if (current.phase !== req.expectedPhase) {
+        throw new Error(
+          `PhaseConflictError: Expected phase '${req.expectedPhase}', but run is currently at phase '${current.phase}'`
+        );
+      }
+
+      if (current.state_version !== req.expectedStateVersion) {
+        throw new Error(
+          `VersionConflictError: Expected state version ${req.expectedStateVersion}, but run is at version ${current.state_version}`
+        );
+      }
+
+      if (!this.canTransition(current.phase, req.targetPhase)) {
+        throw new Error(
+          `IllegalTransitionError: Transition from '${current.phase}' to '${req.targetPhase}' is not permitted by policy`
+        );
+      }
+
+      const newStateVersion = current.state_version + 1;
+      const event = req.eventType
+        ? {
+            eventType: req.eventType,
+            payload: req.eventPayload ?? {},
+            sequence: newStateVersion
+          }
+        : undefined;
+
+      const casSuccess = await this.store.compareAndSwapRun(
+        req.runId,
+        req.tenantId,
+        req.expectedPhase,
+        req.expectedStateVersion,
+        req.targetPhase,
+        newStateVersion,
+        event
       );
+
+      if (!casSuccess) {
+        throw new Error(
+          `CASConcurrencyConflict: Compare-and-swap failed for run ${req.runId} (concurrent modification detected)`
+        );
+      }
+
+      metrics.phaseTransitionsTotal.inc({
+        from_phase: current.phase,
+        to_phase: req.targetPhase,
+        status: "success"
+      });
+
+      return {
+        runId: req.runId,
+        previousPhase: current.phase,
+        newPhase: req.targetPhase,
+        previousStateVersion: current.state_version,
+        newStateVersion,
+        fencingToken: req.fencingToken
+      };
+    } catch (err) {
+      metrics.phaseTransitionsTotal.inc({
+        from_phase: req.expectedPhase,
+        to_phase: req.targetPhase,
+        status: "failure"
+      });
+      throw err;
     }
-
-    if (current.state_version !== req.expectedStateVersion) {
-      throw new Error(
-        `VersionConflictError: Expected state version ${req.expectedStateVersion}, but run is at version ${current.state_version}`
-      );
-    }
-
-    if (!this.canTransition(current.phase, req.targetPhase)) {
-      throw new Error(
-        `IllegalTransitionError: Transition from '${current.phase}' to '${req.targetPhase}' is not permitted by policy`
-      );
-    }
-
-    const newStateVersion = current.state_version + 1;
-    const event = req.eventType
-      ? {
-          eventType: req.eventType,
-          payload: req.eventPayload ?? {},
-          sequence: newStateVersion
-        }
-      : undefined;
-
-    const casSuccess = await this.store.compareAndSwapRun(
-      req.runId,
-      req.tenantId,
-      req.expectedPhase,
-      req.expectedStateVersion,
-      req.targetPhase,
-      newStateVersion,
-      event
-    );
-
-    if (!casSuccess) {
-      throw new Error(
-        `CASConcurrencyConflict: Compare-and-swap failed for run ${req.runId} (concurrent modification detected)`
-      );
-    }
-
-    return {
-      runId: req.runId,
-      previousPhase: current.phase,
-      newPhase: req.targetPhase,
-      previousStateVersion: current.state_version,
-      newStateVersion,
-      fencingToken: req.fencingToken
-    };
   }
 }

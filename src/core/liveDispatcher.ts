@@ -19,6 +19,7 @@ import { TeardownEngine, TeardownResult } from "./teardownEngine.js";
 import { RunStateMachine, FactoryRunRecord } from "./stateMachine.js";
 import { PolicyIntegrityVerifier } from "./policyIntegrity.js";
 import type { Phase as FactoryExecutionPhase } from "../../contracts/interfaces.js";
+import { metrics } from "./metrics.js";
 
 export interface LiveDispatchConfig {
   run: FactoryRunRecord;
@@ -91,6 +92,7 @@ export class LiveDispatcher {
     let leaseToken = 1;
     let stateVersion = run.state_version;
     let currentPhase = run.phase;
+    const phaseStartTime = Date.now();
 
     try {
       console.log(`[LiveDispatcher:${runId}] Starting live execution: phase='${phase}', sandbox='${sandboxId}'`);
@@ -145,6 +147,7 @@ export class LiveDispatcher {
         memoryMb: config.memoryMb ?? 2048,
         setupScript: formattedScript
       });
+      metrics.sandboxesProvisionedTotal.inc({ phase });
       console.log(`[LiveDispatcher:${runId}] VM created on exe.dev. Waiting for Tailscale enrollment...`);
 
       // 4. Poll Tailscale device API until VM enrolls
@@ -419,6 +422,7 @@ export class LiveDispatcher {
       });
 
       console.log(`[LiveDispatcher:${runId}] Teardown completed: cleanTerminated=${teardownResult.cleanTerminated}, finalPhase=${teardownResult.finalPhase}`);
+      metrics.phaseDurationSeconds.observe((Date.now() - phaseStartTime) / 1000, { phase });
 
       if (this.phaseEnvelopeStore) {
         await this.phaseEnvelopeStore.recordPhaseOutputs({

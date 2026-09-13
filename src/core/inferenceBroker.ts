@@ -15,6 +15,7 @@ import crypto from "node:crypto";
 import { FactoryRunRecord, RunStateStore } from "./stateMachine.js";
 import { TailscaleClient, TailscaleDevice } from "../adapters/tailscale/client.js";
 import { EvidenceLedger } from "../warden/ledger.js";
+import { metrics } from "./metrics.js";
 
 export class ModelNotAllowedError extends Error {
   constructor(model: string, allowed: string[]) {
@@ -189,125 +190,136 @@ export class InferenceBroker {
   async brokerChat(req: InferenceRequest): Promise<InferenceResponse> {
     const model = req.model ?? this.policy.defaultModel;
 
-    // 1. Model Allowlist Enforcement
-    if (!this.policy.allowedModels.includes(model)) {
-      throw new ModelNotAllowedError(model, this.policy.allowedModels);
-    }
-
-    // 2. Run Verification & Budget Check
-    const run = await this.runStore.getRun(req.runId);
-    if (!run) {
-      throw new Error(`RunNotFoundError: Run '${req.runId}' not found`);
-    }
-
-    const budget = (run.budget as Record<string, any>) || {};
-    const maxCostCents = Number(budget.max_cost_cents ?? 500);
-    const currentCostCents = Number(budget.current_cost_cents ?? 0);
-
-    if (currentCostCents >= maxCostCents) {
-      throw new BudgetExceededError(req.runId, currentCostCents, maxCostCents);
-    }
-
-    // 3. Resolve Worker Endpoint
-    const workerEndpoint = await this.resolveWorkerEndpoint();
-    const apiUrl = `${workerEndpoint}/v1/chat/completions`;
-
-    console.log(`[InferenceBroker:${req.runId}] Routing model request for '${model}' to ${apiUrl}...`);
-
-    const requestPayload = {
-      model,
-      messages: req.messages,
-      temperature: req.temperature ?? 0.2,
-      max_tokens: Math.min(req.max_tokens ?? 2048, this.policy.maxTokensPerRequest),
-      stream: false
-    };
-
-    const startTime = Date.now();
-    let res: Response;
-
     try {
-      res = await this.fetchFn(apiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(requestPayload),
-        signal: AbortSignal.timeout(120000) // 2-minute inference timeout
-      });
-    } catch (err: any) {
-      throw new InferenceWorkerUnavailableError(`Failed to reach inference worker at ${workerEndpoint}: ${err.message}`);
+      // 1. Model Allowlist Enforcement
+      if (!this.policy.allowedModels.includes(model)) {
+        throw new ModelNotAllowedError(model, this.policy.allowedModels);
+      }
+
+      // 2. Run Verification & Budget Check
+      const run = await this.runStore.getRun(req.runId);
+      if (!run) {
+        throw new Error(`RunNotFoundError: Run '${req.runId}' not found`);
+      }
+
+      const budget = (run.budget as Record<string, any>) || {};
+      const maxCostCents = Number(budget.max_cost_cents ?? 500);
+      const currentCostCents = Number(budget.current_cost_cents ?? 0);
+
+      if (currentCostCents >= maxCostCents) {
+        throw new BudgetExceededError(req.runId, currentCostCents, maxCostCents);
+      }
+
+      // 3. Resolve Worker Endpoint
+      const workerEndpoint = await this.resolveWorkerEndpoint();
+      const apiUrl = `${workerEndpoint}/v1/chat/completions`;
+
+      console.log(`[InferenceBroker:${req.runId}] Routing model request for '${model}' to ${apiUrl}...`);
+
+      const requestPayload = {
+        model,
+        messages: req.messages,
+        temperature: req.temperature ?? 0.2,
+        max_tokens: Math.min(req.max_tokens ?? 2048, this.policy.maxTokensPerRequest),
+        stream: false
+      };
+
+      const startTime = Date.now();
+      let res: Response;
+
+      try {
+        res = await this.fetchFn(apiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestPayload),
+          signal: AbortSignal.timeout(120000) // 2-minute inference timeout
+        });
+      } catch (err: any) {
+        throw new InferenceWorkerUnavailableError(`Failed to reach inference worker at ${workerEndpoint}: ${err.message}`);
+      }
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`InferenceWorkerError (${res.status}): ${errText}`);
+      }
+
+      const latencyMs = Date.now() - startTime;
+      const data = (await res.json()) as any;
+
+      const content = data.choices?.[0]?.message?.content ?? "";
+      const promptTokens = Number(data.usage?.prompt_tokens ?? 0);
+      const completionTokens = Number(data.usage?.completion_tokens ?? 0);
+      const totalTokens = Number(data.usage?.total_tokens ?? (promptTokens + completionTokens));
+
+      // 4. Calculate cost & update run budget
+      const costCents = this.calculateCostCents(model, promptTokens, completionTokens);
+      const newCurrentCostCents = Math.round((currentCostCents + costCents) * 100) / 100;
+      const remainingBudgetCents = Math.max(0, Math.round((maxCostCents - newCurrentCostCents) * 100) / 100);
+
+      const updatedBudget = {
+        ...budget,
+        current_cost_cents: newCurrentCostCents,
+        total_tokens_consumed: Number(budget.total_tokens_consumed ?? 0) + totalTokens,
+        last_model_used: model,
+        last_latency_ms: latencyMs
+      };
+
+      // Commit updated budget to state store if supported
+      if (typeof (this.runStore as any).updateBudget === "function") {
+        await (this.runStore as any).updateBudget(req.runId, updatedBudget);
+      } else if (typeof (this.runStore as any).updateRunBudget === "function") {
+        await (this.runStore as any).updateRunBudget(req.runId, updatedBudget);
+      }
+
+      // 5. Record boundary evidence in ledger
+      if (this.evidenceLedger) {
+        const responseSha = crypto.createHash("sha256").update(content, "utf8").digest("hex");
+        await this.evidenceLedger.recordEvent({
+          tenantId: req.tenantId || run.tenant_id,
+          requestId: run.request_id,
+          runId: req.runId,
+          sandboxId: req.phase ? `sbx-${req.runId}-${req.phase}` : `sbx-${req.runId}`,
+          policyVersion: run.policy_version || "v2.0",
+          eventType: "network_decision_observed",
+          source: { role: "Outside_Orchestrator", host: "srv719637" },
+          observation: {
+            action: "brokered_inference",
+            model,
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+            total_tokens: totalTokens,
+            cost_cents: costCents,
+            latency_ms: latencyMs,
+            remaining_budget_cents: remainingBudgetCents,
+            response_sha256: responseSha
+          }
+        }).catch((e) => console.warn(`[InferenceBroker:${req.runId}] Evidence ledger recording failed:`, e.message));
+      }
+
+      // Telemetry: Record metrics
+      metrics.inferenceRequestsTotal.inc({ model, status: "success" });
+      metrics.tokensConsumedTotal.inc({ model, type: "prompt" }, promptTokens);
+      metrics.tokensConsumedTotal.inc({ model, type: "completion" }, completionTokens);
+      metrics.inferenceCostCentsTotal.inc({ tenant: run.tenant_id, model }, costCents);
+
+      console.log(
+        `[InferenceBroker:${req.runId}] Completed inference: ${totalTokens} tokens, ${costCents}¢ (${latencyMs}ms). Remaining: ${remainingBudgetCents}¢`
+      );
+
+      return {
+        id: data.id || `chatcmpl-${crypto.randomBytes(4).toString("hex")}`,
+        model,
+        content,
+        promptTokens,
+        completionTokens,
+        totalTokens,
+        costCents,
+        latencyMs,
+        remainingBudgetCents
+      };
+    } catch (err) {
+      metrics.inferenceRequestsTotal.inc({ model, status: "error" });
+      throw err;
     }
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`InferenceWorkerError (${res.status}): ${errText}`);
-    }
-
-    const latencyMs = Date.now() - startTime;
-    const data = (await res.json()) as any;
-
-    const content = data.choices?.[0]?.message?.content ?? "";
-    const promptTokens = Number(data.usage?.prompt_tokens ?? 0);
-    const completionTokens = Number(data.usage?.completion_tokens ?? 0);
-    const totalTokens = Number(data.usage?.total_tokens ?? (promptTokens + completionTokens));
-
-    // 4. Calculate cost & update run budget
-    const costCents = this.calculateCostCents(model, promptTokens, completionTokens);
-    const newCurrentCostCents = Math.round((currentCostCents + costCents) * 100) / 100;
-    const remainingBudgetCents = Math.max(0, Math.round((maxCostCents - newCurrentCostCents) * 100) / 100);
-
-    const updatedBudget = {
-      ...budget,
-      current_cost_cents: newCurrentCostCents,
-      total_tokens_consumed: Number(budget.total_tokens_consumed ?? 0) + totalTokens,
-      last_model_used: model,
-      last_latency_ms: latencyMs
-    };
-
-    // Commit updated budget to state store if supported
-    if (typeof (this.runStore as any).updateBudget === "function") {
-      await (this.runStore as any).updateBudget(req.runId, updatedBudget);
-    } else if (typeof (this.runStore as any).updateRunBudget === "function") {
-      await (this.runStore as any).updateRunBudget(req.runId, updatedBudget);
-    }
-
-    // 5. Record boundary evidence in ledger
-    if (this.evidenceLedger) {
-      const responseSha = crypto.createHash("sha256").update(content, "utf8").digest("hex");
-      await this.evidenceLedger.recordEvent({
-        tenantId: req.tenantId || run.tenant_id,
-        requestId: run.request_id,
-        runId: req.runId,
-        sandboxId: req.phase ? `sbx-${req.runId}-${req.phase}` : `sbx-${req.runId}`,
-        policyVersion: run.policy_version || "v2.0",
-        eventType: "network_decision_observed",
-        source: { role: "Outside_Orchestrator", host: "srv719637" },
-        observation: {
-          action: "brokered_inference",
-          model,
-          prompt_tokens: promptTokens,
-          completion_tokens: completionTokens,
-          total_tokens: totalTokens,
-          cost_cents: costCents,
-          latency_ms: latencyMs,
-          remaining_budget_cents: remainingBudgetCents,
-          response_sha256: responseSha
-        }
-      }).catch((e) => console.warn(`[InferenceBroker:${req.runId}] Evidence ledger recording failed:`, e.message));
-    }
-
-    console.log(
-      `[InferenceBroker:${req.runId}] Completed inference: ${totalTokens} tokens, ${costCents}¢ (${latencyMs}ms). Remaining: ${remainingBudgetCents}¢`
-    );
-
-    return {
-      id: data.id || `chatcmpl-${crypto.randomBytes(4).toString("hex")}`,
-      model,
-      content,
-      promptTokens,
-      completionTokens,
-      totalTokens,
-      costCents,
-      latencyMs,
-      remainingBudgetCents
-    };
   }
 }

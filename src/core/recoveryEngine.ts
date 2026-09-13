@@ -20,6 +20,7 @@ import { TailscaleClient, TailscaleDevice } from "../adapters/tailscale/client.j
 import { ExeDevClient } from "../adapters/exedev/client.js";
 import { TeardownEngine } from "./teardownEngine.js";
 import { EvidenceLedger } from "../warden/ledger.js";
+import { metrics } from "./metrics.js";
 
 export interface RecoveredRunReport {
   runId: string;
@@ -191,6 +192,12 @@ export class RecoveryEngine {
         }).catch((e) => console.warn(`[RecoveryEngine:${runId}] Evidence ledger write failed:`, e.message));
       }
 
+      const status = newPhase === "quarantined" ? "quarantined" : "recovered";
+      metrics.recoveryRunsTotal.inc({ status });
+      if (orphanedSandboxCleaned) {
+        metrics.sandboxesDestroyedTotal.inc({ reason: "recovery" });
+      }
+
       return {
         runId,
         tenantId,
@@ -200,10 +207,11 @@ export class RecoveryEngine {
         newStateVersion,
         newFencingToken: fencingToken,
         orphanedSandboxCleaned,
-        status: newPhase === "quarantined" ? "quarantined" : "recovered"
+        status
       };
     } catch (err: any) {
       console.error(`[RecoveryEngine:${runId}] Failed to recover run:`, err);
+      metrics.recoveryRunsTotal.inc({ status: "error" });
       return {
         runId,
         tenantId,

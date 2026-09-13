@@ -21,6 +21,7 @@ import {
 } from "./core/inferenceBroker.js";
 import { computeAgentsMdSha256 } from "./core/policyIntegrity.js";
 import { RecoveryEngine, RecoverySummary } from "./core/recoveryEngine.js";
+import { metricsRegistry, metrics } from "./core/metrics.js";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -170,6 +171,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // 1.1 Prometheus Telemetry Metrics (GET /metrics) - Governed by Contract §6.4 (tag:monitoring)
+  if (pathname === "/metrics" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "text/plain; version=0.0.4; charset=utf-8" });
+    res.end(metricsRegistry.renderPrometheus());
+    return;
+  }
+
   // 2. Ingress Run Admission (POST /runs or POST /v1/runs)
   if ((pathname === "/runs" || pathname === "/v1/runs") && req.method === "POST") {
     if (!admissionEngine) {
@@ -199,6 +207,9 @@ const server = http.createServer(async (req, res) => {
       const result = await admissionEngine.admitRequest(body);
       const statusCode = result.isExisting ? 200 : 201;
 
+      // Telemetry: Record run admission metric
+      metrics.runsTotal.inc({ tenant: body.tenantId, outcome: result.isExisting ? "conflict" : "admitted" });
+
       res.writeHead(statusCode, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
@@ -209,6 +220,7 @@ const server = http.createServer(async (req, res) => {
       );
     } catch (err: unknown) {
       const error = err as Error;
+      metrics.runsTotal.inc({ tenant: "unknown", outcome: "rejected" });
       const isClientError =
         error.message?.includes("invalid") ||
         error.name === "SyntaxError" ||
