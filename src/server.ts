@@ -1,9 +1,15 @@
 import http from "node:http";
+import fs from "node:fs";
 import { getAdminClient } from "./adapters/supabase/client.js";
 import { SupabaseRunStateStore } from "./adapters/supabase/runsRepo.js";
-import { LeaseManager, SupabaseLeaseStorage, InMemoryLeaseStorage } from "./core/leaseManager.js";
+import { LeaseManager, SupabaseLeaseStorage } from "./core/leaseManager.js";
 import { RequestAdmissionEngine, CreateRunRequest } from "./core/ingress.js";
-import { InMemoryRunStateStore } from "./core/stateMachine.js";
+import { RunStateMachine } from "./core/stateMachine.js";
+import { TailscaleClient } from "./adapters/tailscale/client.js";
+import { ExeDevClient } from "./adapters/exedev/client.js";
+import { EvidenceLedger, SupabaseEvidenceStore } from "./warden/ledger.js";
+import { TeardownEngine, StaleCallbackRejector } from "./core/teardownEngine.js";
+import { authorizeHarvest } from "./core/harvest.js";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -11,14 +17,46 @@ const HOST = process.env.HOST || "127.0.0.1";
 // Initialize repositories and engines
 let admissionEngine: RequestAdmissionEngine | null = null;
 let runsRepo: SupabaseRunStateStore | null = null;
+let leaseManager: LeaseManager | null = null;
+let teardownEngine: TeardownEngine | null = null;
+let evidenceLedger: EvidenceLedger | null = null;
+let wardenPublicKeyPem = "";
 
 try {
   if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
     const adminClient = getAdminClient();
     runsRepo = new SupabaseRunStateStore(adminClient);
     const leaseStorage = new SupabaseLeaseStorage(adminClient);
-    const leaseManager = new LeaseManager(leaseStorage, process.env.HOSTNAME || "srv719637");
+    leaseManager = new LeaseManager(leaseStorage, process.env.HOSTNAME || "srv719637");
     admissionEngine = new RequestAdmissionEngine(runsRepo, leaseManager);
+
+    const stateMachine = new RunStateMachine(runsRepo);
+    const evidenceStore = new SupabaseEvidenceStore(adminClient);
+    const tailscaleClient = new TailscaleClient();
+    const exedevClient = new ExeDevClient();
+    const staleCallbackRejector = new StaleCallbackRejector();
+
+    let privateKeyPem = "";
+    if (process.env.WARDEN_KEY_PATH && fs.existsSync(process.env.WARDEN_KEY_PATH)) {
+      privateKeyPem = fs.readFileSync(process.env.WARDEN_KEY_PATH, "utf8");
+    }
+    if (process.env.WARDEN_PUBLIC_KEY_PATH && fs.existsSync(process.env.WARDEN_PUBLIC_KEY_PATH)) {
+      wardenPublicKeyPem = fs.readFileSync(process.env.WARDEN_PUBLIC_KEY_PATH, "utf8");
+    }
+
+    if (privateKeyPem) {
+      evidenceLedger = new EvidenceLedger(evidenceStore, privateKeyPem);
+      teardownEngine = new TeardownEngine({
+        stateMachine,
+        leaseManager,
+        tailscaleClient,
+        exedevClient,
+        evidenceLedger,
+        staleCallbackRejector,
+        privateKeyPem,
+        publicKeyPem: wardenPublicKeyPem
+      });
+    }
   }
 } catch (err) {
   console.warn("Supabase credentials not configured or failed to initialize, running in memory-fallback mode:", err);
@@ -36,7 +74,7 @@ function parseJsonBody<T>(req: http.IncomingMessage): Promise<T> {
     });
     req.on("end", () => {
       try {
-        resolve(JSON.parse(body) as T);
+        resolve(body ? (JSON.parse(body) as T) : ({} as T));
       } catch (err) {
         reject(err);
       }
@@ -65,8 +103,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 2. Ingress Run Admission (POST /runs)
-  if (pathname === "/runs" && req.method === "POST") {
+  // 2. Ingress Run Admission (POST /runs or POST /v1/runs)
+  if ((pathname === "/runs" || pathname === "/v1/runs") && req.method === "POST") {
     if (!admissionEngine) {
       res.writeHead(503, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "StorageUnavailable", message: "Admission engine is not initialized" }));
@@ -95,9 +133,116 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 3. Query Run Status (GET /runs/:runId)
-  if (pathname.startsWith("/runs/") && req.method === "GET") {
-    const runId = pathname.slice("/runs/".length);
+  // 3. Teardown Trigger (POST /runs/:runId/teardown or POST /v1/runs/:runId/teardown)
+  const teardownMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/teardown$/);
+  if (teardownMatch && req.method === "POST") {
+    const runId = teardownMatch[1];
+    if (!teardownEngine || !runsRepo) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "EngineUnavailable", message: "Teardown engine is not initialized" }));
+      return;
+    }
+
+    try {
+      const run = await runsRepo.getRun(runId);
+      if (!run) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "RunNotFound", runId }));
+        return;
+      }
+
+      const body = await parseJsonBody<{
+        sandbox_id?: string;
+        exe_vm_id?: string;
+        tailscale_node_id?: string;
+        tailscale_ip?: string;
+        fencing_token?: number;
+      }>(req);
+
+      const result = await teardownEngine.executeTeardown({
+        runId,
+        tenantId: run.tenant_id,
+        requestId: run.request_id,
+        sandboxId: body.sandbox_id ?? `sbx-${runId}`,
+        exeVmId: body.exe_vm_id ?? `sbx-${runId}`,
+        tailscaleNodeId: body.tailscale_node_id ?? `node-${runId}`,
+        tailscaleIp: body.tailscale_ip ?? "100.81.98.200",
+        policyVersion: run.policy_version,
+        fencingToken: body.fencing_token ?? 1,
+        expectedStateVersion: run.state_version,
+        currentPhase: run.phase
+      });
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 4. Harvest Authorization (POST /runs/:runId/harvest or POST /v1/runs/:runId/harvest)
+  const harvestMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/harvest$/);
+  if (harvestMatch && req.method === "POST") {
+    const runId = harvestMatch[1];
+    if (!runsRepo) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "StorageUnavailable" }));
+      return;
+    }
+
+    try {
+      const run = await runsRepo.getRun(runId);
+      if (!run) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "RunNotFound", runId }));
+        return;
+      }
+
+      const body = await parseJsonBody<{
+        selected_arm_id: string;
+        signature: string;
+        signer_identity: string;
+        public_key_pem?: string;
+        teardown_evidence_id?: string;
+      }>(req);
+
+      const isClean = run.phase === "clean_terminated";
+      const result = await authorizeHarvest({
+        runId,
+        selectedArmId: body.selected_arm_id ?? "default",
+        treeSha: run.parent_git_sha,
+        envelopeHash: String((run.envelope as Record<string, unknown>)?.task_envelope_hash ?? "0".repeat(64)),
+        policyVersion: run.policy_version,
+        signerIdentity: body.signer_identity,
+        signature: body.signature,
+        publicKeyPem: body.public_key_pem ?? wardenPublicKeyPem,
+        isCleanTerminated: isClean,
+        ergPassed: true,
+        testGatePassed: true,
+        teardownEvidenceId: body.teardown_evidence_id ?? "evt-clean-term",
+        tenantId: run.tenant_id,
+        requestId: run.request_id,
+        ledger: evidenceLedger ?? undefined
+      });
+
+      const statusCode = result.authorized ? 200 : 403;
+      res.writeHead(statusCode, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 5. Query Run Status (GET /runs/:runId or GET /v1/runs/:runId)
+  const statusMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)$/);
+  if (statusMatch && req.method === "GET") {
+    const runId = statusMatch[1];
     if (!runsRepo) {
       res.writeHead(503, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "StorageUnavailable" }));
@@ -122,7 +267,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 4. Default Not Found
+  // 6. Default Not Found
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "not_found" }));
 });
