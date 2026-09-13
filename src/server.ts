@@ -152,6 +152,9 @@ const server = http.createServer(async (req, res) => {
 
     try {
       const rawBody = await parseJsonBody<any>(req);
+      const agentsMdContent = rawBody.agentsMdContent ?? rawBody.agents_md_content;
+      const agentsMdSha256 = rawBody.agentsMdSha256 ?? rawBody.agents_md_sha256 ?? (agentsMdContent ? computeAgentsMdSha256(agentsMdContent) : "0".repeat(64));
+
       const body: CreateRunRequest = {
         requestId: rawBody.requestId || rawBody.request_id,
         idempotencyKey: rawBody.idempotencyKey || rawBody.idempotency_key,
@@ -161,8 +164,8 @@ const server = http.createServer(async (req, res) => {
         intent: rawBody.intent || "execute",
         acceptanceCriteria: rawBody.acceptanceCriteria || rawBody.acceptance_criteria || (rawBody.envelope?.acceptance_criteria) || ["Valid phase result"],
         policyVersion: rawBody.policyVersion || rawBody.policy_version || "v2.0",
-        agentsMdSha256: rawBody.agentsMdSha256 || rawBody.agents_md_sha256 || (rawBody.agents_md_content ? computeAgentsMdSha256(rawBody.agents_md_content) : "0".repeat(64)),
-        agentsMdContent: rawBody.agentsMdContent || rawBody.agents_md_content,
+        agentsMdSha256,
+        agentsMdContent,
         budgetCents: rawBody.budgetCents || rawBody.budget_cents || (rawBody.budget?.max_cost_cents) || 500
       };
       const result = await admissionEngine.admitRequest(body);
@@ -178,7 +181,14 @@ const server = http.createServer(async (req, res) => {
       );
     } catch (err: unknown) {
       const error = err as Error;
-      const statusCode = error.message?.includes("invalid") || error.name === "SyntaxError" ? 400 : 500;
+      const isClientError =
+        error.message?.includes("invalid") ||
+        error.name === "SyntaxError" ||
+        error.name === "AuthorityViolationError" ||
+        error.name === "AgentsMdDriftError" ||
+        error.name === "UnsupportedPolicyVersionError" ||
+        error.name === "PolicyDriftError";
+      const statusCode = isClientError ? 400 : 500;
       res.writeHead(statusCode, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
     }
