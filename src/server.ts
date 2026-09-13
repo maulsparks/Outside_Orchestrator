@@ -320,8 +320,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 5. Query Run Status (GET /runs/:runId or GET /v1/runs/:runId)
-  const statusMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)$/);
+  // 5. Query Run Status (GET /runs/:runId, GET /runs/:runId/status, GET /v1/runs/:runId, GET /v1/runs/:runId/status)
+  const statusMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)(?:\/status)?$/);
   if (statusMatch && req.method === "GET") {
     const runId = statusMatch[1];
     if (!runsRepo) {
@@ -338,8 +338,27 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      let leaseInfo: unknown = null;
+      if (leaseManager) {
+        try {
+          const lease = await leaseManager.getLease(runId);
+          leaseInfo = lease ? {
+            fencingToken: lease.fencingToken,
+            expiresAt: lease.expiresAt,
+            isExpired: new Date(lease.expiresAt) <= new Date()
+          } : null;
+        } catch {
+          // Non-blocking
+        }
+      }
+
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ run }));
+      res.end(JSON.stringify({
+        run,
+        lease: leaseInfo,
+        node: process.env.HOSTNAME || "srv719637",
+        timestamp: new Date().toISOString()
+      }));
     } catch (err: unknown) {
       const error = err as Error;
       res.writeHead(500, { "Content-Type": "application/json" });

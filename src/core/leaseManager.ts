@@ -109,6 +109,13 @@ export class LeaseManager {
   }
 
   /**
+   * Retrieves the current lease record for a run if present.
+   */
+  async getLease(runId: string): Promise<LeaseRecord | null> {
+    return this.storage.getLease(runId);
+  }
+
+  /**
    * Acquires a lease for a run. Monotonically increments the fencing token.
    * Rejects if active unexpired lease is held by another worker.
    */
