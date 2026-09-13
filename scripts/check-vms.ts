@@ -33,7 +33,7 @@ async function main() {
 
   const rawIdx = args.indexOf("--raw");
   if (rawIdx !== -1 && args[rawIdx + 1]) {
-    const rawCmd = args[rawIdx + 1];
+    const rawCmd = args.slice(rawIdx + 1).join(" ");
     console.log(`Sending raw command to exe.dev: ${rawCmd}...`);
     const res = await fetch("https://exe.dev/exec", {
       method: "POST",
