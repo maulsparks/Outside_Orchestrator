@@ -87,7 +87,15 @@ export class MockTailscaleHarness {
         );
       }
 
-      // 4. Device expire / deauthorize endpoint
+      // 4. Tailnet devices listing endpoint
+      if (urlStr.endsWith("/devices") || urlStr.includes("/devices?")) {
+        return new Response(JSON.stringify({ devices: Array.from(this.devices.values()) }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      // 5. Device expire / deauthorize endpoint
       if (urlStr.includes("/expire") && init?.method === "POST") {
         const match = urlStr.match(/\/device\/([^/]+)\/expire/);
         const deviceId = match ? match[1] : "";

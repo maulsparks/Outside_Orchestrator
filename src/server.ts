@@ -10,6 +10,7 @@ import { ExeDevClient } from "./adapters/exedev/client.js";
 import { EvidenceLedger, SupabaseEvidenceStore } from "./warden/ledger.js";
 import { TeardownEngine, StaleCallbackRejector } from "./core/teardownEngine.js";
 import { authorizeHarvest } from "./core/harvest.js";
+import { LiveDispatcher, LiveDispatchConfig } from "./core/liveDispatcher.js";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -20,6 +21,7 @@ let runsRepo: SupabaseRunStateStore | null = null;
 let leaseManager: LeaseManager | null = null;
 let teardownEngine: TeardownEngine | null = null;
 let evidenceLedger: EvidenceLedger | null = null;
+let liveDispatcher: LiveDispatcher | null = null;
 let wardenPublicKeyPem = "";
 
 try {
@@ -56,6 +58,15 @@ try {
         privateKeyPem,
         publicKeyPem: wardenPublicKeyPem
       });
+
+      liveDispatcher = new LiveDispatcher(
+        exedevClient,
+        tailscaleClient,
+        leaseManager,
+        evidenceLedger,
+        teardownEngine,
+        stateMachine
+      );
     }
   }
 } catch (err) {
@@ -133,7 +144,65 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 3. Teardown Trigger (POST /runs/:runId/teardown or POST /v1/runs/:runId/teardown)
+  // 3. Live Sandbox Execution Dispatch (POST /runs/:runId/dispatch or POST /v1/runs/:runId/dispatch)
+  const dispatchMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/dispatch$/);
+  if (dispatchMatch && req.method === "POST") {
+    if (!liveDispatcher || !runsRepo) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "DispatcherUnavailable", message: "Live dispatcher is not initialized" }));
+      return;
+    }
+
+    try {
+      const runId = dispatchMatch[1];
+      const run = await runsRepo.getRun(runId);
+      if (!run) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "RunNotFound", runId }));
+        return;
+      }
+
+      const body = await parseJsonBody<{
+        phase?: "plan" | "build" | "test" | "review" | "document";
+        allowed_paths?: string[];
+        immutable_paths?: string[];
+        cpu_millis?: number;
+        memory_mb?: number;
+        ttl_seconds?: number;
+        async?: boolean;
+      }>(req);
+
+      const dispatchConfig: LiveDispatchConfig = {
+        run,
+        phase: body.phase ?? "build",
+        allowedPaths: body.allowed_paths ?? ["src/**", "output/**"],
+        immutablePaths: body.immutable_paths ?? ["AGENTS.md"],
+        cpuMillis: body.cpu_millis,
+        memoryMb: body.memory_mb,
+        ttlSeconds: body.ttl_seconds
+      };
+
+      if (body.async) {
+        liveDispatcher.executeRun(dispatchConfig).catch((err) => {
+          console.error(`[LiveDispatcher] Background run '${runId}' failed:`, err);
+        });
+        res.writeHead(202, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "dispatching", runId }));
+        return;
+      }
+
+      const result = await liveDispatcher.executeRun(dispatchConfig);
+      res.writeHead(result.status === "completed" ? 200 : 500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 4. Teardown Trigger (POST /runs/:runId/teardown or POST /v1/runs/:runId/teardown)
   const teardownMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/teardown$/);
   if (teardownMatch && req.method === "POST") {
     const runId = teardownMatch[1];

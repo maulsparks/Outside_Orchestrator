@@ -20,3 +20,8 @@ export * from "./warden/ledger.js";
 export * from "./warden/signer.js";
 export * from "./warden/canonicalizer.js";
 export * from "./warden/collector.js";
+export * from "./core/liveDispatcher.js";
+export * from "./adapters/exedev/bootstrap.js";
+export * from "./adapters/exedev/client.js";
+export * from "./adapters/tailscale/client.js";
+export * from "./core/nodeVerifier.js";

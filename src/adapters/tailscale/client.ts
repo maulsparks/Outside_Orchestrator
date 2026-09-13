@@ -185,6 +185,37 @@ export class TailscaleClient {
   }
 
   /**
+   * Lists all devices in the tailnet inventory.
+   */
+  async getDevices(): Promise<TailscaleDevice[]> {
+    const headers = await this.getAuthHeaders();
+    const res = await this.fetchFn(`${this.baseUrl}/api/v2/tailnet/${this.tailnet}/devices`, {
+      method: "GET",
+      headers
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`TailscaleDevicesQueryError: Failed to list devices (${res.status}): ${err}`);
+    }
+
+    const data = (await res.json()) as { devices: TailscaleDevice[] };
+    return data.devices || [];
+  }
+
+  /**
+   * Finds a device in the tailnet matching a hostname or name prefix.
+   */
+  async findDeviceByHostname(hostname: string): Promise<TailscaleDevice | null> {
+    const devices = await this.getDevices();
+    const target = hostname.toLowerCase();
+    return devices.find(d => 
+      (d.hostname && d.hostname.toLowerCase() === target) ||
+      (d.name && d.name.toLowerCase().startsWith(target))
+    ) || null;
+  }
+
+  /**
    * Fetches device details from tailnet inventory.
    */
   async getDevice(deviceId: string): Promise<TailscaleDevice | null> {

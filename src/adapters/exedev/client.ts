@@ -4,6 +4,8 @@ export interface CreateVmConfig {
   cpuMillis?: number;
   memoryMb?: number;
   ttlSeconds?: number;
+  setupScript?: string;
+  noEmail?: boolean;
 }
 
 export interface ExeDevVm {
@@ -61,7 +63,13 @@ export class ExeDevClient {
     const cpuCores = Math.max(1, Math.ceil((config.cpuMillis ?? 2000) / 1000));
     const memoryGb = Math.max(1, Math.ceil((config.memoryMb ?? 2048) / 1024));
 
-    const command = `new --name=${vmName} --cpu=${cpuCores} --memory=${memoryGb}`;
+    let command = `new --name=${vmName} --cpu=${cpuCores} --memory=${memoryGb}`;
+    if (config.noEmail) {
+      command += " --no-email";
+    }
+    if (config.setupScript) {
+      command += ` --setup-script="${config.setupScript}"`;
+    }
     const res = await this.fetchFn(`${this.baseUrl}/exec`, {
       method: "POST",
       headers: {
