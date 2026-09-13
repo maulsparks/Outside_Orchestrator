@@ -231,14 +231,14 @@ def add_trace(event_type, payload):
     return evt
 
 def get_trace_jsonl():
-    return "\n".join(json.dumps(e, separators=(',', ':')) for e in TRACE_EVENTS)
+    return "\\n".join(json.dumps(e, separators=(',', ':')) for e in TRACE_EVENTS)
 
 def compute_manifest_sha256():
     return hashlib.sha256(get_trace_jsonl().encode('utf-8')).hexdigest()
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        sys.stderr.write("%s - - [%s] %s\n" % (self.client_address[0], self.log_date_time_string(), format % args))
+        sys.stderr.write("%s - - [%s] %s\\n" % (self.client_address[0], self.log_date_time_string(), format % args))
         sys.stderr.flush()
 
     def send_json(self, status_code, obj):
