@@ -181,4 +181,37 @@ export class ExeDevClient {
       throw new Error(`ExeDevGitCloneError: Failed to clone repository at ${commitSha}: ${result.stderr}`);
     }
   }
+
+  /**
+   * Lists all VMs for the account.
+   */
+  async listVms(): Promise<Array<{ name: string; raw: string }>> {
+    this.assertApiKey();
+
+    const res = await this.fetchFn(`${this.baseUrl}/exec`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${this.apiKey}`,
+        "Content-Type": "text/plain"
+      },
+      body: "ls"
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`ExeDevListError: Failed to list VMs (${res.status}): ${err}`);
+    }
+
+    const output = await res.text();
+    const lines = output.split("\n").map(l => l.trim()).filter(Boolean);
+    return lines.map(line => {
+      const parts = line.split(/\s+/);
+      return {
+        name: parts[0] || line,
+        raw: line
+      };
+    });
+  }
 }
+
+
