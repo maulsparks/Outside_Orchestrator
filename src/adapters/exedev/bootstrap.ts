@@ -4,6 +4,8 @@
  * Enforces zero-credential leakage: host provisioning keys are NEVER included.
  */
 
+import zlib from "node:zlib";
+
 export interface BootstrapConfig {
   vmName: string;
   tailscaleAuthKey: string;
@@ -185,43 +187,42 @@ server.listen(port, '0.0.0.0', () => {
 export function buildBootstrapScript(config: BootstrapConfig): string {
   const port = config.insideOrchestratorPort ?? 8787;
   const daemonJs = buildInsideOrchestratorDaemonCode(port);
-  const daemonBase64 = Buffer.from(daemonJs, 'utf8').toString('base64');
 
   return `#!/usr/bin/env bash
 set -euo pipefail
 
 # 1. Install Node.js if missing
 if ! command -v node >/dev/null 2>&1; then
-  echo "Installing Node.js..."
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null 2>&1
   apt-get install -y -qq nodejs >/dev/null 2>&1
 fi
 
 # 2. Install Tailscale if missing
 if ! command -v tailscale >/dev/null 2>&1; then
-  echo "Installing Tailscale..."
   curl -fsSL https://tailscale.com/install.sh | sh >/dev/null 2>&1
 fi
 
 # 3. Authenticate Tailscale as ephemeral node
-echo "Starting Tailscale..."
 tailscale up --authkey="${config.tailscaleAuthKey}" --hostname="${config.vmName}" --accept-routes=false --accept-dns=false || true
 
 # 4. Deploy Inside Orchestrator daemon
-echo "Deploying Inside Orchestrator..."
 mkdir -p /opt/inside-orchestrator
-echo "${daemonBase64}" | base64 -d > /opt/inside-orchestrator/server.js
+cat << 'EOF' > /opt/inside-orchestrator/server.js
+${daemonJs}
+EOF
 
 # 5. Launch Inside Orchestrator daemon in background
 nohup node /opt/inside-orchestrator/server.js > /var/log/inside-orchestrator.log 2>&1 &
-echo "Inside Orchestrator started on port ${port}."
 `;
 }
 
 /**
- * Wraps the setup script into a safe base64 single-line one-liner for exe.dev flag compatibility.
+ * Compresses setup script with gzip and encodes in base64.
+ * Keeps the payload under 2 KiB (exe.dev limit is 10 KiB).
  */
 export function formatSetupScriptForExeDev(script: string): string {
-  const b64 = Buffer.from(script, 'utf8').toString('base64');
-  return `echo ${b64} | base64 -d | bash`;
+  const gzipped = zlib.gzipSync(Buffer.from(script, "utf8"));
+  const b64 = gzipped.toString("base64");
+  return `echo "${b64}" | base64 -d | gunzip | bash`;
 }
+
