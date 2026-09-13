@@ -66,6 +66,7 @@ export interface RunStateStore {
     newStateVersion: number,
     event?: { eventType: string; payload: Record<string, unknown>; sequence: number }
   ): Promise<boolean>;
+  updateBudget?(runId: string, budget: Record<string, unknown>): Promise<void> | void;
 }
 
 export class InMemoryRunStateStore implements RunStateStore {
@@ -79,6 +80,13 @@ export class InMemoryRunStateStore implements RunStateStore {
   async getRun(runId: string): Promise<FactoryRunRecord | null> {
     const run = this.runs.get(runId);
     return run ? { ...run } : null;
+  }
+
+  async updateBudget(runId: string, budget: Record<string, unknown>): Promise<void> {
+    const run = this.runs.get(runId);
+    if (run) {
+      run.budget = { ...budget };
+    }
   }
 
   async compareAndSwapRun(

@@ -13,6 +13,12 @@ import { authorizeHarvest } from "./core/harvest.js";
 import { LiveDispatcher, LiveDispatchConfig } from "./core/liveDispatcher.js";
 import { SupabasePhaseEnvelopeStore } from "./core/dispatcher.js";
 import { MultiPhaseSequencer, MultiPhaseSequenceConfig } from "./core/multiPhaseSequencer.js";
+import {
+  InferenceBroker,
+  ModelNotAllowedError,
+  BudgetExceededError,
+  InferenceWorkerUnavailableError
+} from "./core/inferenceBroker.js";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -26,6 +32,7 @@ let evidenceLedger: EvidenceLedger | null = null;
 let phaseEnvelopeStore: SupabasePhaseEnvelopeStore | null = null;
 let liveDispatcher: LiveDispatcher | null = null;
 let multiPhaseSequencer: MultiPhaseSequencer | null = null;
+let inferenceBroker: InferenceBroker | null = null;
 let wardenPublicKeyPem = "";
 
 try {
@@ -82,6 +89,12 @@ try {
         phaseEnvelopeStore
       );
     }
+
+    inferenceBroker = new InferenceBroker({
+      runStore: runsRepo,
+      tailscaleClient,
+      evidenceLedger: evidenceLedger ?? undefined
+    });
   }
 } catch (err) {
   console.warn("Supabase credentials not configured or failed to initialize, running in memory-fallback mode:", err);
@@ -425,7 +438,66 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 6. Default Not Found
+  // 6. Model Inference Brokering (POST /runs/:runId/inference or POST /v1/runs/:runId/inference)
+  const inferenceMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/inference$/);
+  if (inferenceMatch && req.method === "POST") {
+    if (!inferenceBroker || !runsRepo) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "InferenceUnavailable", message: "Inference broker is not initialized" }));
+      return;
+    }
+
+    try {
+      const runId = inferenceMatch[1];
+      const body = await parseJsonBody<{
+        messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+        model?: string;
+        temperature?: number;
+        max_tokens?: number;
+        phase?: string;
+        tenant_id?: string;
+      }>(req);
+
+      if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "InvalidRequest", message: "messages array is required and cannot be empty" }));
+        return;
+      }
+
+      const result = await inferenceBroker.brokerChat({
+        runId,
+        messages: body.messages,
+        model: body.model,
+        temperature: body.temperature,
+        max_tokens: body.max_tokens,
+        phase: body.phase,
+        tenantId: body.tenant_id
+      });
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err: unknown) {
+      const error = err as Error;
+      let statusCode = 500;
+      let errorType = error.name || "InferenceError";
+
+      if (error instanceof ModelNotAllowedError) {
+        statusCode = 400;
+      } else if (error instanceof BudgetExceededError) {
+        statusCode = 402;
+      } else if (error instanceof InferenceWorkerUnavailableError) {
+        statusCode = 502;
+      } else if (error.message?.includes("RunNotFoundError")) {
+        statusCode = 404;
+      }
+
+      res.writeHead(statusCode, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: errorType, message: error.message }));
+    }
+    return;
+  }
+
+  // 7. Default Not Found
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "not_found" }));
 });

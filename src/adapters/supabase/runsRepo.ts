@@ -119,4 +119,12 @@ export class SupabaseRunStateStore implements RunStateStore {
 
     return true;
   }
+
+  async updateBudget(runId: string, budget: Record<string, unknown>): Promise<void> {
+    await this.client.update(
+      "factory_runs",
+      { id: runId },
+      { budget, updated_at: new Date().toISOString() }
+    );
+  }
 }
