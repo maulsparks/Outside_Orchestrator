@@ -67,6 +67,7 @@ export interface RunStateStore {
     event?: { eventType: string; payload: Record<string, unknown>; sequence: number }
   ): Promise<boolean>;
   updateBudget?(runId: string, budget: Record<string, unknown>): Promise<void> | void;
+  listInFlightRuns?(): Promise<FactoryRunRecord[]>;
 }
 
 export class InMemoryRunStateStore implements RunStateStore {
@@ -80,6 +81,13 @@ export class InMemoryRunStateStore implements RunStateStore {
   async getRun(runId: string): Promise<FactoryRunRecord | null> {
     const run = this.runs.get(runId);
     return run ? { ...run } : null;
+  }
+
+  async listInFlightRuns(): Promise<FactoryRunRecord[]> {
+    const nonTerminalPhases: Phase[] = ["created", "provisioning", "delegated", "in_progress", "evaluating"];
+    return Array.from(this.runs.values())
+      .filter((r) => nonTerminalPhases.includes(r.phase))
+      .map((r) => ({ ...r }));
   }
 
   async updateBudget(runId: string, budget: Record<string, unknown>): Promise<void> {

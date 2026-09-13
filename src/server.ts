@@ -20,6 +20,7 @@ import {
   InferenceWorkerUnavailableError
 } from "./core/inferenceBroker.js";
 import { computeAgentsMdSha256 } from "./core/policyIntegrity.js";
+import { RecoveryEngine, RecoverySummary } from "./core/recoveryEngine.js";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -34,6 +35,7 @@ let phaseEnvelopeStore: SupabasePhaseEnvelopeStore | null = null;
 let liveDispatcher: LiveDispatcher | null = null;
 let multiPhaseSequencer: MultiPhaseSequencer | null = null;
 let inferenceBroker: InferenceBroker | null = null;
+let recoveryEngine: RecoveryEngine | null = null;
 let wardenPublicKeyPem = "";
 
 try {
@@ -96,6 +98,32 @@ try {
       tailscaleClient,
       evidenceLedger: evidenceLedger ?? undefined
     });
+
+    recoveryEngine = new RecoveryEngine({
+      runStore: runsRepo,
+      stateMachine,
+      leaseManager,
+      teardownEngine: teardownEngine ?? undefined,
+      tailscaleClient,
+      exedevClient,
+      evidenceLedger: evidenceLedger ?? undefined
+    });
+
+    // Contract §8 / §10 AC 2: Recover in-flight runs asynchronously on startup
+    recoveryEngine
+      .recoverAllInFlightRuns()
+      .then((summary) => {
+        if (summary.reports.length > 0) {
+          console.log(
+            `[StartupRecovery] Processed ${summary.reports.length} in-flight runs on boot (${summary.recoveredCount} recovered, ${summary.quarantinedCount} quarantined, ${summary.errorCount} errors).`
+          );
+        } else {
+          console.log("[StartupRecovery] No interrupted runs detected on boot.");
+        }
+      })
+      .catch((err) => {
+        console.error("[StartupRecovery] Error during boot recovery:", err);
+      });
   }
 } catch (err) {
   console.warn("Supabase credentials not configured or failed to initialize, running in memory-fallback mode:", err);
@@ -556,7 +584,70 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 8. Default Not Found
+  // 8. Disaster Recovery Reconciliation (POST /v1/recovery/reconcile or POST /runs/reconcile)
+  if ((pathname === "/v1/recovery/reconcile" || pathname === "/runs/reconcile") && req.method === "POST") {
+    if (!recoveryEngine) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "StorageUnavailable", message: "Recovery engine is not initialized" }));
+      return;
+    }
+
+    try {
+      const rawBody = await parseJsonBody<any>(req).catch(() => ({}));
+      if (rawBody?.runId || rawBody?.run_id) {
+        const runId = rawBody.runId || rawBody.run_id;
+        const run = await runsRepo?.getRun(runId);
+        if (!run) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "RunNotFound", runId }));
+          return;
+        }
+        const report = await recoveryEngine.recoverRun(run);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(report));
+      } else {
+        const summary = await recoveryEngine.recoverAllInFlightRuns();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(summary));
+      }
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 9. Disaster Recovery Status Query (GET /v1/recovery/status or GET /runs/recovery/status)
+  if ((pathname === "/v1/recovery/status" || pathname === "/runs/recovery/status") && req.method === "GET") {
+    if (!recoveryEngine) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "StorageUnavailable", message: "Recovery engine is not initialized" }));
+      return;
+    }
+
+    try {
+      const inFlightRuns = await recoveryEngine.findInFlightRuns();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          status: "ready",
+          in_flight_count: inFlightRuns.length,
+          in_flight_run_ids: inFlightRuns.map((r) => r.id),
+          target_rto_minutes: 30,
+          governing_contract: "Outside Orchestrator Role Contract v2 §8",
+          timestamp: new Date().toISOString()
+        })
+      );
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 10. Default Not Found
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "not_found" }));
 });

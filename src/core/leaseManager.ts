@@ -117,19 +117,20 @@ export class LeaseManager {
 
   /**
    * Acquires a lease for a run. Monotonically increments the fencing token.
-   * Rejects if active unexpired lease is held by another worker.
+   * Rejects if active unexpired lease is held by another worker, unless force=true (e.g. crash recovery).
    */
   async acquireLease(
     runId: string,
     tenantId: string,
     ttlMs: number,
-    holderId?: string
+    holderId?: string,
+    force: boolean = false
   ): Promise<{ fencingToken: number; expiresAt: Date }> {
     const activeHolder = holderId ?? this.defaultHolderId;
     const now = Date.now();
     const existing = await this.storage.getLease(runId);
 
-    if (existing && existing.expiresAt.getTime() > now && existing.holderId !== activeHolder) {
+    if (existing && existing.expiresAt.getTime() > now && existing.holderId !== activeHolder && !force) {
       throw new Error(`LeaseConflictError: Run ${runId} is held by active worker ${existing.holderId}`);
     }
 
