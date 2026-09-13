@@ -16,6 +16,22 @@ async function main() {
     }
   }
 
+  const execIdx = args.indexOf("--exec");
+  if (execIdx !== -1 && args[execIdx + 1] && args[execIdx + 2]) {
+    const vmName = args[execIdx + 1];
+    const cmd = args[execIdx + 2];
+    console.log(`Executing in ${vmName}: ${cmd}...`);
+    try {
+      const res = await client.execCommand(vmName, cmd);
+      console.log(`Exit Code: ${res.exitCode}`);
+      console.log(`Stdout: ${res.stdout}`);
+      if (res.stderr) console.error(`Stderr: ${res.stderr}`);
+    } catch (err: any) {
+      console.error(`✖ Failed to exec in ${vmName}:`, err.message);
+    }
+  }
+
+
   console.log("Querying exe.dev for active VMs...");
   const vms = await client.listVms();
   console.log(`Found ${vms.length} VM entry/entries:`);
