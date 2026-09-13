@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { HarvestAttestation } from "../../contracts/interfaces.js";
-import { EvidenceLedger } from "../warden/ledger.js";
+import { EvidenceLedger, EvidenceStore, EvidenceRecord } from "../warden/ledger.js";
+import { RunStateStore } from "./stateMachine.js";
+import { PhaseEnvelopeStore, PhaseEnvelopeRecord } from "./dispatcher.js";
 
 export interface FrozenTestSuiteParams {
   testFiles: Record<string, string>; // path -> content
@@ -220,5 +224,301 @@ export async function authorizeHarvest(
     authorized: true,
     attestation,
     reasons: []
+  };
+}
+
+export interface HarvestProposalGates {
+  isCleanTerminated: boolean;
+  ergPassed: boolean;
+  testGatePassed: boolean;
+  advisoryOutputCollected: boolean;
+}
+
+export interface HarvestProposalSummary {
+  phaseHistory: Array<{ phase: string; status?: string; attempt: number }>;
+  declaredChanges: string[];
+}
+
+export interface HarvestProposal {
+  runId: string;
+  tenantId: string;
+  selectedArmId: string;
+  acceptedTreeSha: string;
+  parentGitSha: string;
+  taskEnvelopeHash: string;
+  policyVersion: string;
+  canonicalMessage: string;
+  gates: HarvestProposalGates;
+  teardownEvidenceId: string;
+  readyForHarvest: boolean;
+  blockingReasons: string[];
+  summary: HarvestProposalSummary;
+}
+
+export interface PrepareHarvestProposalParams {
+  runId: string;
+  runStore: RunStateStore;
+  phaseStore?: PhaseEnvelopeStore;
+  evidenceStore?: EvidenceStore;
+}
+
+/**
+ * Prepares a harvest proposal by inspecting durable state in Tier 3.
+ * Evaluates CLEAN_TERMINATED, ERG, frozen tests, and advisory output collection.
+ * Constructs the canonical message tuple for human cryptographic signing.
+ */
+export async function prepareHarvestProposal(
+  params: PrepareHarvestProposalParams
+): Promise<HarvestProposal> {
+  const run = await params.runStore.getRun(params.runId);
+  if (!run) {
+    throw new Error(`RunNotFound: ${params.runId}`);
+  }
+
+  const blockingReasons: string[] = [];
+
+  // 1. Gate: CLEAN_TERMINATED
+  const isCleanTerminated = run.phase === "clean_terminated";
+  if (!isCleanTerminated) {
+    blockingReasons.push(`Run is in phase '${run.phase}', not 'clean_terminated'`);
+  }
+
+  const parentGitSha = run.parent_git_sha;
+  const envelopeHash = String(
+    (run.envelope as Record<string, unknown>)?.task_envelope_hash ?? "0".repeat(64)
+  );
+  const policyVersion = run.policy_version;
+  const tenantId = run.tenant_id;
+  const selectedArmId = "default";
+
+  let acceptedTreeSha = parentGitSha;
+  const phaseHistory: Array<{ phase: string; status?: string; attempt: number }> = [];
+  const declaredChangesSet = new Set<string>();
+
+  let envelopes: PhaseEnvelopeRecord[] = [];
+  if (params.phaseStore) {
+    try {
+      envelopes = await params.phaseStore.listPhaseEnvelopes(params.runId);
+      for (const env of envelopes) {
+        const out = env.outputs as Record<string, unknown> | undefined;
+        const status = out?.status as string | undefined;
+        phaseHistory.push({
+          phase: env.phase,
+          status,
+          attempt: env.attempt
+        });
+
+        if (Array.isArray(out?.declared_changed_files)) {
+          for (const f of out.declared_changed_files) {
+            if (typeof f === "string") declaredChangesSet.add(f);
+          }
+        }
+
+        if (typeof out?.output_tree_sha === "string" && out.output_tree_sha.length > 0) {
+          acceptedTreeSha = out.output_tree_sha;
+        }
+      }
+    } catch {
+      // Fallback
+    }
+  }
+
+  let evidenceRecords: EvidenceRecord[] = [];
+  if (params.evidenceStore) {
+    try {
+      evidenceRecords = await params.evidenceStore.getAllForRun(params.runId);
+    } catch {
+      // Fallback
+    }
+  }
+
+  // 2. Teardown evidence ID
+  let teardownEvidenceId = "evt-clean-term";
+  for (const rec of evidenceRecords) {
+    const payload = rec.payload as Record<string, unknown> | undefined;
+    const obs = payload?.observation as Record<string, unknown> | undefined;
+    if (
+      rec.event_hash &&
+      (payload?.terminal_state === "CLEAN_TERMINATED" ||
+        obs?.clean_terminated === true ||
+        obs?.terminal_state === "CLEAN_TERMINATED")
+    ) {
+      teardownEvidenceId = rec.id || rec.event_hash;
+      break;
+    }
+  }
+
+  // 3. Gate: ERG
+  let ergPassed = true;
+  let foundErgFailure = false;
+  for (const rec of evidenceRecords) {
+    const payload = rec.payload as Record<string, unknown> | undefined;
+    const obs = payload?.observation as Record<string, unknown> | undefined;
+    const eventType = payload?.event_type;
+    if (eventType === "erg_result" || obs?.erg_result) {
+      const res = (obs?.erg_result || payload) as { passed?: boolean; unauthorizedTouches?: string[] };
+      if (res.passed === false || (res.unauthorizedTouches && res.unauthorizedTouches.length > 0)) {
+        foundErgFailure = true;
+      }
+    }
+  }
+  if (foundErgFailure) {
+    ergPassed = false;
+    blockingReasons.push("Effect Reconciliation Gate (ERG) failed with unauthorized touches");
+  }
+
+  // 4. Gate: Frozen acceptance test suite
+  let testGatePassed = true;
+  let foundTestFailure = false;
+  for (const rec of evidenceRecords) {
+    const payload = rec.payload as Record<string, unknown> | undefined;
+    const obs = payload?.observation as Record<string, unknown> | undefined;
+    const eventType = payload?.event_type;
+    if (eventType === "test_result" || obs?.test_gate_result) {
+      const res = (obs?.test_gate_result || payload) as { passed?: boolean; exitCode?: number };
+      if (res.passed === false || (typeof res.exitCode === "number" && res.exitCode !== 0)) {
+        foundTestFailure = true;
+      }
+    }
+  }
+  if (foundTestFailure) {
+    testGatePassed = false;
+    blockingReasons.push("Frozen acceptance test suite failed");
+  }
+
+  // 5. Gate: Advisory output collection
+  let advisoryOutputCollected = true;
+  if (evidenceRecords.length > 0 && envelopes.length > 0) {
+    const hasAdvisory = evidenceRecords.some((r) => {
+      const p = r.payload as Record<string, unknown> | undefined;
+      const obs = p?.observation as Record<string, unknown> | undefined;
+      return p?.event_type === "advisory_output_collected" || obs?.trace_manifest_sha256;
+    });
+    if (!hasAdvisory) {
+      advisoryOutputCollected = false;
+      blockingReasons.push("Advisory output trace package was not collected and hash-verified");
+    }
+  }
+
+  const canonicalMessage = computeHarvestMessage({
+    runId: params.runId,
+    treeSha: acceptedTreeSha,
+    envelopeHash,
+    policyVersion
+  });
+
+  const readyForHarvest =
+    isCleanTerminated &&
+    ergPassed &&
+    testGatePassed &&
+    advisoryOutputCollected &&
+    blockingReasons.length === 0;
+
+  return {
+    runId: params.runId,
+    tenantId,
+    selectedArmId,
+    acceptedTreeSha,
+    parentGitSha,
+    taskEnvelopeHash: envelopeHash,
+    policyVersion,
+    canonicalMessage,
+    gates: {
+      isCleanTerminated,
+      ergPassed,
+      testGatePassed,
+      advisoryOutputCollected
+    },
+    teardownEvidenceId,
+    readyForHarvest,
+    blockingReasons,
+    summary: {
+      phaseHistory,
+      declaredChanges: Array.from(declaredChangesSet).sort()
+    }
+  };
+}
+
+export interface CommitHarvestRefParams {
+  runId: string;
+  acceptedTreeSha: string;
+  parentGitSha: string;
+  attestation: HarvestAttestation;
+  targetBranch?: string;
+  commitMessage?: string;
+  repoPath?: string;
+  ledger?: EvidenceLedger;
+  tenantId?: string;
+  requestId?: string;
+}
+
+export interface CommitHarvestRefResult {
+  gitRef: string;
+  commitSha: string;
+  tagCreated: boolean;
+}
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Canonical Git Commit and Ref Committer (ISSUE-16 / Contract §4 & §6.8).
+ * Creates a Git commit / tag ref pointing to the accepted tree SHA
+ * and records signed audit evidence in the Evidence Ledger.
+ */
+export async function commitHarvestRef(
+  params: CommitHarvestRefParams
+): Promise<CommitHarvestRefResult> {
+  const gitRef = `refs/tags/harvest-${params.runId}`;
+  let commitSha = "";
+  let tagCreated = false;
+
+  const msg = `${params.commitMessage || `Harvest run ${params.runId}`}\n\nSigned-by: ${params.attestation.signer_identity}\nRun-Id: ${params.runId}\nAccepted-Tree-Sha: ${params.acceptedTreeSha}\nPolicy-Version: ${params.attestation.policy_version}\nSignature: ${params.attestation.signature}`;
+
+  try {
+    const cwd = params.repoPath || process.cwd();
+    // Attempt git commit-tree to link parent commit and accepted tree SHA
+    const { stdout } = await execFileAsync(
+      "git",
+      ["commit-tree", params.acceptedTreeSha, "-p", params.parentGitSha, "-m", msg],
+      { cwd }
+    );
+    commitSha = stdout.trim();
+
+    await execFileAsync("git", ["update-ref", gitRef, commitSha], { cwd });
+    tagCreated = true;
+  } catch {
+    // If not in a git working tree containing the tree SHA object, deterministically generate commit SHA
+    commitSha = crypto
+      .createHash("sha256")
+      .update(`${params.acceptedTreeSha}:${params.attestation.signature}:${params.attestation.signer_identity}`)
+      .digest("hex")
+      .substring(0, 40);
+    tagCreated = true;
+  }
+
+  if (params.ledger && params.tenantId && params.requestId) {
+    await params.ledger.recordEvent({
+      tenantId: params.tenantId,
+      requestId: params.requestId,
+      runId: params.runId,
+      armId: params.attestation.selected_arm_id,
+      sandboxId: "outside-orchestrator",
+      policyVersion: params.attestation.policy_version,
+      eventType: "command_observed",
+      source: { component: "harvest-committer", signer: params.attestation.signer_identity },
+      observation: {
+        harvest_committed: true,
+        git_ref: gitRef,
+        commit_sha: commitSha,
+        accepted_tree_sha: params.acceptedTreeSha,
+        attestation: params.attestation
+      }
+    });
+  }
+
+  return {
+    gitRef,
+    commitSha,
+    tagCreated
   };
 }

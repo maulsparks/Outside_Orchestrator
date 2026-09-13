@@ -285,4 +285,18 @@ export class EvidenceLedger {
       chainHead: last ? last.event_hash : undefined
     };
   }
+
+  /**
+   * Retrieves underlying EvidenceStore.
+   */
+  getStore(): EvidenceStore {
+    return this.store;
+  }
+
+  /**
+   * Retrieves all evidence records recorded for a run.
+   */
+  async getAllForRun(runId: string): Promise<EvidenceRecord[]> {
+    return this.store.getAllForRun(runId);
+  }
 }

@@ -9,7 +9,7 @@ import { TailscaleClient } from "./adapters/tailscale/client.js";
 import { ExeDevClient } from "./adapters/exedev/client.js";
 import { EvidenceLedger, SupabaseEvidenceStore } from "./warden/ledger.js";
 import { TeardownEngine, StaleCallbackRejector } from "./core/teardownEngine.js";
-import { authorizeHarvest } from "./core/harvest.js";
+import { authorizeHarvest, prepareHarvestProposal, commitHarvestRef } from "./core/harvest.js";
 import { LiveDispatcher, LiveDispatchConfig } from "./core/liveDispatcher.js";
 import { SupabasePhaseEnvelopeStore } from "./core/dispatcher.js";
 import { MultiPhaseSequencer, MultiPhaseSequenceConfig } from "./core/multiPhaseSequencer.js";
@@ -383,7 +383,36 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 4. Harvest Authorization (POST /runs/:runId/harvest or POST /v1/runs/:runId/harvest)
+  // 4a. Harvest Proposal Generation (GET /runs/:runId/harvest/proposal or GET /v1/runs/:runId/harvest/proposal)
+  const proposalMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/harvest\/proposal$/);
+  if (proposalMatch && req.method === "GET") {
+    const runId = proposalMatch[1];
+    if (!runsRepo) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "StorageUnavailable" }));
+      return;
+    }
+
+    try {
+      const proposal = await prepareHarvestProposal({
+        runId,
+        runStore: runsRepo,
+        phaseStore: phaseEnvelopeStore ?? undefined,
+        evidenceStore: evidenceLedger ? evidenceLedger.getStore() : undefined
+      });
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(proposal));
+    } catch (err: unknown) {
+      const error = err as Error;
+      const statusCode = error.message.includes("RunNotFound") ? 404 : 500;
+      res.writeHead(statusCode, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 4b. Harvest Authorization & Canonical Merge (POST /runs/:runId/harvest or POST /v1/runs/:runId/harvest)
   const harvestMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/harvest$/);
   if (harvestMatch && req.method === "POST") {
     const runId = harvestMatch[1];
@@ -402,35 +431,68 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await parseJsonBody<{
-        selected_arm_id: string;
+        selected_arm_id?: string;
         signature: string;
         signer_identity: string;
         public_key_pem?: string;
         teardown_evidence_id?: string;
+        target_branch?: string;
+        commit_message?: string;
       }>(req);
 
-      const isClean = run.phase === "clean_terminated";
+      // Dynamically evaluate proposal and gate readiness
+      const proposal = await prepareHarvestProposal({
+        runId,
+        runStore: runsRepo,
+        phaseStore: phaseEnvelopeStore ?? undefined,
+        evidenceStore: evidenceLedger ? evidenceLedger.getStore() : undefined
+      });
+
       const result = await authorizeHarvest({
         runId,
-        selectedArmId: body.selected_arm_id ?? "default",
-        treeSha: run.parent_git_sha,
-        envelopeHash: String((run.envelope as Record<string, unknown>)?.task_envelope_hash ?? "0".repeat(64)),
-        policyVersion: run.policy_version,
+        selectedArmId: body.selected_arm_id ?? proposal.selectedArmId,
+        treeSha: proposal.acceptedTreeSha,
+        envelopeHash: proposal.taskEnvelopeHash,
+        policyVersion: proposal.policyVersion,
         signerIdentity: body.signer_identity,
         signature: body.signature,
         publicKeyPem: body.public_key_pem ?? wardenPublicKeyPem,
-        isCleanTerminated: isClean,
-        ergPassed: true,
-        testGatePassed: true,
-        teardownEvidenceId: body.teardown_evidence_id ?? "evt-clean-term",
+        isCleanTerminated: proposal.gates.isCleanTerminated,
+        ergPassed: proposal.gates.ergPassed,
+        testGatePassed: proposal.gates.testGatePassed,
+        teardownEvidenceId: body.teardown_evidence_id ?? proposal.teardownEvidenceId,
         tenantId: run.tenant_id,
         requestId: run.request_id,
         ledger: evidenceLedger ?? undefined
       });
 
-      const statusCode = result.authorized ? 200 : 403;
-      res.writeHead(statusCode, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(result));
+      if (!result.authorized) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+        return;
+      }
+
+      // Canonical Git commit / tag ref update
+      const commitResult = await commitHarvestRef({
+        runId,
+        acceptedTreeSha: proposal.acceptedTreeSha,
+        parentGitSha: proposal.parentGitSha,
+        attestation: result.attestation!,
+        targetBranch: body.target_branch ?? "main",
+        commitMessage: body.commit_message ?? `Harvest run ${runId} (authorized by ${body.signer_identity})`,
+        ledger: evidenceLedger ?? undefined,
+        tenantId: run.tenant_id,
+        requestId: run.request_id
+      });
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        authorized: true,
+        attestation: result.attestation,
+        git_ref: commitResult.gitRef,
+        commit_sha: commitResult.commitSha,
+        reasons: []
+      }));
     } catch (err: unknown) {
       const error = err as Error;
       res.writeHead(500, { "Content-Type": "application/json" });
