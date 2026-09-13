@@ -190,39 +190,57 @@ export function buildBootstrapScript(config: BootstrapConfig): string {
 
   return `#!/usr/bin/env bash
 set -euo pipefail
+exec > /var/log/bootstrap.log 2>&1
+echo "=== Bootstrap started at $(date -u) ==="
+
+if [ "$(id -u)" -ne 0 ]; then
+  SUDO="sudo"
+else
+  SUDO=""
+fi
 
 # 1. Install Node.js if missing
 if ! command -v node >/dev/null 2>&1; then
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null 2>&1
-  apt-get install -y -qq nodejs >/dev/null 2>&1
+  echo "Installing Node.js..."
+  curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO bash - >/dev/null 2>&1
+  $SUDO apt-get install -y -qq nodejs >/dev/null 2>&1
 fi
 
 # 2. Install Tailscale if missing
 if ! command -v tailscale >/dev/null 2>&1; then
-  curl -fsSL https://tailscale.com/install.sh | sh >/dev/null 2>&1
+  echo "Installing Tailscale..."
+  curl -fsSL https://tailscale.com/install.sh | $SUDO sh >/dev/null 2>&1
 fi
 
-# 3. Authenticate Tailscale as ephemeral node
-tailscale up --authkey="${config.tailscaleAuthKey}" --hostname="${config.vmName}" --accept-routes=false --accept-dns=false || true
+# 3. Start tailscaled daemon and authenticate
+echo "Starting tailscaled..."
+$SUDO systemctl enable --now tailscaled 2>/dev/null || $SUDO service tailscaled start 2>/dev/null || true
+sleep 3
+echo "Authenticating Tailscale..."
+$SUDO tailscale up --authkey="${config.tailscaleAuthKey}" --hostname="${config.vmName}" --accept-routes=false --accept-dns=false || true
 
 # 4. Deploy Inside Orchestrator daemon
-mkdir -p /opt/inside-orchestrator
-cat << 'EOF' > /opt/inside-orchestrator/server.js
+echo "Deploying Inside Orchestrator..."
+$SUDO mkdir -p /opt/inside-orchestrator
+$SUDO tee /opt/inside-orchestrator/server.js > /dev/null << 'EOF'
 ${daemonJs}
 EOF
 
 # 5. Launch Inside Orchestrator daemon in background
-nohup node /opt/inside-orchestrator/server.js > /var/log/inside-orchestrator.log 2>&1 &
+echo "Starting Inside Orchestrator daemon..."
+$SUDO nohup node /opt/inside-orchestrator/server.js > /var/log/inside-orchestrator.log 2>&1 &
+echo "=== Bootstrap finished at $(date -u) ==="
 `;
 }
 
 /**
  * Compresses setup script with gzip and encodes in base64.
- * Keeps the payload under 2 KiB (exe.dev limit is 10 KiB).
+ * Keeps the payload under 3 KiB (exe.dev limit is 10 KiB).
  */
 export function formatSetupScriptForExeDev(script: string): string {
   const gzipped = zlib.gzipSync(Buffer.from(script, "utf8"));
   const b64 = gzipped.toString("base64");
-  return `echo ${b64} | base64 -d | gunzip | bash`;
+  return `echo ${b64} | base64 -d | gzip -dc | bash`;
 }
+
 
