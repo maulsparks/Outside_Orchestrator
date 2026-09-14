@@ -39,7 +39,7 @@ export class SystemdWatchdog {
   async notifyReady(): Promise<boolean> {
     if (!this.isAvailable()) return false;
     try {
-      await this.execFn(this.systemdNotifyPath, [`--pid=${process.pid}`, "--ready"]);
+      await this.execFn(this.systemdNotifyPath, ["--no-block", `--pid=${process.pid}`, "--ready"]);
       return true;
     } catch {
       return false;
@@ -52,7 +52,7 @@ export class SystemdWatchdog {
   async notifyWatchdog(): Promise<boolean> {
     if (!this.isAvailable()) return false;
     try {
-      await this.execFn(this.systemdNotifyPath, [`--pid=${process.pid}`, "--watchdog"]);
+      await this.execFn(this.systemdNotifyPath, ["--no-block", `--pid=${process.pid}`, "WATCHDOG=1"]);
       return true;
     } catch {
       return false;
