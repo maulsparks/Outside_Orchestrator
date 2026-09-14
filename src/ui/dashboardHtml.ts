@@ -884,6 +884,21 @@ export function getDashboardHtml(): string {
             </div>
           </div>
 
+          <!-- Action Banner / Dispatch Control for Selected Run -->
+          <div id="progressionActionBanner" style="margin-top: 1rem; margin-bottom: 1rem; display: none;">
+            <div style="background: rgba(14, 165, 233, 0.08); border: 1px solid rgba(14, 165, 233, 0.3); border-radius: 8px; padding: 1rem 1.25rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem;">
+              <div>
+                <div style="font-weight: 600; font-size: 0.95rem; color: #fff;">Run Admitted — Ready for Sandbox Dispatch</div>
+                <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.2rem;">
+                  Provision ephemeral exe.dev VM, apply Tailscale isolation, and start execution (Contract §6.3, §6.5).
+                </div>
+              </div>
+              <button id="btnDispatchSandbox" class="btn btn-primary" onclick="dispatchSelectedRun()" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1.2rem; font-weight: 600; white-space: nowrap;">
+                <span>🚀 Dispatch Live Sandbox</span>
+              </button>
+            </div>
+          </div>
+
           <!-- Run Metadata Grid -->
           <div class="meta-grid">
             <div class="meta-item">
@@ -1069,7 +1084,13 @@ export function getDashboardHtml(): string {
         <label class="form-label">Max Cost Budget (cents)</label>
         <input type="number" id="inputMaxCost" class="form-input" value="1000">
       </div>
-      <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 0.5rem;">
+      <div class="form-group">
+        <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">
+          <input type="checkbox" id="inputAutoDispatch" checked style="accent-color: var(--cyan); width: 16px; height: 16px; cursor: pointer;">
+          <span style="color: #fff;">Immediately dispatch execution to Tier 2 sandbox VM</span>
+        </label>
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 0.75rem;">
         <button class="btn" onclick="closeNewRunModal()">Cancel</button>
         <button class="btn btn-primary" onclick="submitNewRun()">Dispatch Run</button>
       </div>
@@ -1254,6 +1275,12 @@ export function getDashboardHtml(): string {
       document.getElementById("metaBudgetCost").textContent = \`\${run.budget?.max_cost_cents || 0}¢\`;
       document.getElementById("metaEnvelopeHash").textContent = (run.envelope?.task_envelope_hash || run.task_envelope_hash || "none").slice(0, 16) + "...";
       document.getElementById("runStateVersion").textContent = \`State Version: v\${run.state_version}\`;
+
+      // Action Banner for Sandbox Dispatch
+      const banner = document.getElementById("progressionActionBanner");
+      if (banner) {
+        banner.style.display = run.phase === "created" ? "block" : "none";
+      }
 
       // Load Tournament Arms
       loadTournamentArms(runId);
@@ -1531,6 +1558,7 @@ export function getDashboardHtml(): string {
       const tenantId = document.getElementById("inputTenantId").value;
       const parentSha = document.getElementById("inputParentSha").value;
       const maxCost = parseInt(document.getElementById("inputMaxCost").value, 10) || 1000;
+      const autoDispatch = document.getElementById("inputAutoDispatch") ? document.getElementById("inputAutoDispatch").checked : true;
 
       try {
         const res = await fetch("/v1/runs", {
@@ -1547,14 +1575,52 @@ export function getDashboardHtml(): string {
         const data = await res.json();
         if (res.ok) {
           closeNewRunModal();
-          await fetchRuns();
           const newId = data.run ? data.run.id : (data.id || null);
+          if (newId && autoDispatch) {
+            await fetch(\`/v1/runs/\${newId}/dispatch\`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ phase: "build", async: true })
+            });
+          }
+          await fetchRuns();
           if (newId) selectRun(newId);
         } else {
           alert("Create run failed: " + (data.message || data.error));
         }
       } catch (err) {
         alert("Error creating run: " + err.message);
+      }
+    }
+
+    async function dispatchSelectedRun() {
+      if (!selectedRunId) return;
+      const btn = document.getElementById("btnDispatchSandbox");
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = "<span>⏳ Dispatching...</span>";
+      }
+
+      try {
+        const res = await fetch(\`/v1/runs/\${selectedRunId}/dispatch\`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phase: "build", async: true })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          await fetchRuns();
+          await selectRun(selectedRunId);
+        } else {
+          alert("Dispatch failed: " + (data.message || data.error));
+        }
+      } catch (err) {
+        alert("Error dispatching run: " + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = "<span>🚀 Dispatch Live Sandbox</span>";
+        }
       }
     }
 
