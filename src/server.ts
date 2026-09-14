@@ -22,6 +22,7 @@ import {
 import { computeAgentsMdSha256 } from "./core/policyIntegrity.js";
 import { RecoveryEngine, RecoverySummary } from "./core/recoveryEngine.js";
 import { metricsRegistry, metrics } from "./core/metrics.js";
+import { SystemdWatchdog } from "./core/watchdog.js";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -727,6 +728,29 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: "not_found" }));
 });
 
-server.listen(PORT, HOST, () => {
+const watchdog = new SystemdWatchdog();
+
+server.listen(PORT, HOST, async () => {
   console.log(`Outside Orchestrator listening on http://${HOST}:${PORT}`);
+  if (watchdog.isAvailable()) {
+    await watchdog.notifyReady();
+    watchdog.startWatchdog(10000);
+    console.log("[SystemdWatchdog] Notified READY=1 and initiated 10s heartbeats.");
+  }
+});
+
+process.on("SIGTERM", () => {
+  console.log("Received SIGTERM. Stopping watchdog and shutting down server...");
+  watchdog.stopWatchdog();
+  server.close(() => {
+    process.exit(0);
+  });
+});
+
+process.on("SIGINT", () => {
+  console.log("Received SIGINT. Stopping watchdog and shutting down server...");
+  watchdog.stopWatchdog();
+  server.close(() => {
+    process.exit(0);
+  });
 });

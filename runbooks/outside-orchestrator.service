@@ -1,0 +1,40 @@
+[Unit]
+Description=Outside Orchestrator (Tier 1 Edge/Control Plane)
+Documentation=https://github.com/maulsparks/Outside_Orchestrator
+After=network.target tailscaled.service
+Wants=tailscaled.service
+
+[Service]
+Type=notify
+User=orchestrator
+Group=orchestrator
+WorkingDirectory=/opt/outside-orchestrator
+EnvironmentFile=/etc/outside-orchestrator.env
+ExecStart=/usr/bin/node dist/src/server.js
+Restart=always
+RestartSec=5s
+
+# Systemd Watchdog Hardening (Auto-recovers on event loop deadlock or crash)
+WatchdogSec=30s
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+
+# Logging configuration
+StandardOutput=append:/var/log/outside-orchestrator/orchestrator.log
+StandardError=append:/var/log/outside-orchestrator/orchestrator.log
+SyslogIdentifier=outside-orchestrator
+
+# Process Sandboxing & Linux Security Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictRealtime=true
+RestrictNamespaces=true
+ReadWritePaths=/var/log/outside-orchestrator /var/lib/warden
+
+[Install]
+WantedBy=multi-user.target
