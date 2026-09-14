@@ -70,6 +70,7 @@ export interface RunStateStore {
   ): Promise<boolean>;
   updateBudget?(runId: string, budget: Record<string, unknown>): Promise<void> | void;
   listInFlightRuns?(): Promise<FactoryRunRecord[]>;
+  listRuns?(limit?: number): Promise<FactoryRunRecord[]>;
 }
 
 export class InMemoryRunStateStore implements RunStateStore {
@@ -89,6 +90,13 @@ export class InMemoryRunStateStore implements RunStateStore {
     const nonTerminalPhases: Phase[] = ["created", "provisioning", "delegated", "in_progress", "evaluating"];
     return Array.from(this.runs.values())
       .filter((r) => nonTerminalPhases.includes(r.phase))
+      .map((r) => ({ ...r }));
+  }
+
+  async listRuns(limit: number = 50): Promise<FactoryRunRecord[]> {
+    return Array.from(this.runs.values())
+      .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""))
+      .slice(0, limit)
       .map((r) => ({ ...r }));
   }
 

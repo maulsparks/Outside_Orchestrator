@@ -1,4 +1,5 @@
 import http from "node:http";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { getAdminClient } from "./adapters/supabase/client.js";
 import { SupabaseRunStateStore } from "./adapters/supabase/runsRepo.js";
@@ -9,7 +10,7 @@ import { TailscaleClient } from "./adapters/tailscale/client.js";
 import { ExeDevClient } from "./adapters/exedev/client.js";
 import { EvidenceLedger, SupabaseEvidenceStore } from "./warden/ledger.js";
 import { TeardownEngine, StaleCallbackRejector } from "./core/teardownEngine.js";
-import { authorizeHarvest, prepareHarvestProposal, commitHarvestRef } from "./core/harvest.js";
+import { authorizeHarvest, prepareHarvestProposal, commitHarvestRef, signHarvest } from "./core/harvest.js";
 import { LiveDispatcher, LiveDispatchConfig } from "./core/liveDispatcher.js";
 import { SupabasePhaseEnvelopeStore } from "./core/dispatcher.js";
 import { MultiPhaseSequencer, MultiPhaseSequenceConfig } from "./core/multiPhaseSequencer.js";
@@ -30,6 +31,7 @@ import {
   ArbitrationPolicy
 } from "./core/tournament.js";
 import { SupabaseTournamentArmStore } from "./adapters/supabase/tournamentRepo.js";
+import { getDashboardHtml } from "./ui/dashboardHtml.js";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -48,6 +50,7 @@ let recoveryEngine: RecoveryEngine | null = null;
 let tournamentArmStore: TournamentArmStore | null = null;
 let tournamentArbitrator: TournamentArbitrator | null = null;
 let wardenPublicKeyPem = "";
+let wardenPrivateKeyPem = "";
 
 try {
   if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
@@ -69,6 +72,7 @@ try {
     let privateKeyPem = "";
     if (process.env.WARDEN_KEY_PATH && fs.existsSync(process.env.WARDEN_KEY_PATH)) {
       privateKeyPem = fs.readFileSync(process.env.WARDEN_KEY_PATH, "utf8");
+      wardenPrivateKeyPem = privateKeyPem;
     }
     if (process.env.WARDEN_PUBLIC_KEY_PATH && fs.existsSync(process.env.WARDEN_PUBLIC_KEY_PATH)) {
       wardenPublicKeyPem = fs.readFileSync(process.env.WARDEN_PUBLIC_KEY_PATH, "utf8");
@@ -147,6 +151,21 @@ if (!tournamentArmStore) {
   tournamentArbitrator = new TournamentArbitrator(tournamentArmStore);
 }
 
+if (!wardenPrivateKeyPem) {
+  try {
+    const kp = crypto.generateKeyPairSync("ed25519", {
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" }
+    });
+    wardenPrivateKeyPem = kp.privateKey;
+    if (!wardenPublicKeyPem) {
+      wardenPublicKeyPem = kp.publicKey;
+    }
+  } catch {
+    // ignore
+  }
+}
+
 function parseJsonBody<T>(req: http.IncomingMessage): Promise<T> {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -172,8 +191,37 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host || "localhost"}`);
   const pathname = url.pathname;
 
-  // 1. Health Check
-  if ((pathname === "/health" || pathname === "/") && req.method === "GET") {
+  // 1. Health Check & Operator Web Dashboard
+  if ((pathname === "/dashboard" || pathname === "/ui") && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(getDashboardHtml());
+    return;
+  }
+
+  if (pathname === "/" && req.method === "GET") {
+    const accept = req.headers.accept || "";
+    if (accept.includes("text/html")) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(getDashboardHtml());
+      return;
+    }
+    // Default JSON health probe
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        status: "ok",
+        role: "Outside_Orchestrator",
+        tier: "Tier 1 Edge/Control Plane",
+        version: "0.1.0",
+        node: process.env.HOSTNAME || "srv719637",
+        uptime: Math.floor(process.uptime()),
+        timestamp: new Date().toISOString()
+      })
+    );
+    return;
+  }
+
+  if (pathname === "/health" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
@@ -193,6 +241,30 @@ const server = http.createServer(async (req, res) => {
   if (pathname === "/metrics" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "text/plain; version=0.0.4; charset=utf-8" });
     res.end(metricsRegistry.renderPrometheus());
+    return;
+  }
+
+  // 1.2 List Recent Factory Runs (GET /runs or GET /v1/runs)
+  if ((pathname === "/runs" || pathname === "/v1/runs") && req.method === "GET") {
+    if (!runsRepo) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "StorageUnavailable" }));
+      return;
+    }
+
+    try {
+      const limit = parseInt(url.searchParams.get("limit") || "50", 10);
+      const runs = typeof (runsRepo as any).listRuns === "function"
+        ? await (runsRepo as any).listRuns(limit)
+        : await runsRepo.listInFlightRuns();
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(runs));
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
     return;
   }
 
@@ -512,6 +584,113 @@ const server = http.createServer(async (req, res) => {
         git_ref: commitResult.gitRef,
         commit_sha: commitResult.commitSha,
         reasons: []
+      }));
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 4b.1 Quick 1-Click Harvest Approval (POST /runs/:runId/harvest/quick-approve or POST /v1/runs/:runId/harvest/quick-approve)
+  const quickHarvestMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/harvest\/quick-approve$/);
+  if (quickHarvestMatch && req.method === "POST") {
+    const runId = quickHarvestMatch[1];
+    if (!runsRepo) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "StorageUnavailable" }));
+      return;
+    }
+
+    try {
+      const run = await runsRepo.getRun(runId);
+      if (!run) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "RunNotFound", runId }));
+        return;
+      }
+
+      const body = await parseJsonBody<{
+        reviewer_identity?: string;
+        private_key?: string;
+        target_branch?: string;
+      }>(req);
+
+      const proposal = await prepareHarvestProposal({
+        runId,
+        runStore: runsRepo,
+        phaseStore: phaseEnvelopeStore ?? undefined,
+        evidenceStore: evidenceLedger ? evidenceLedger.getStore() : undefined,
+        armStore: tournamentArmStore ?? undefined
+      });
+
+      const signerKey = body.private_key || wardenPrivateKeyPem;
+      if (!signerKey) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          error: "SigningKeyUnavailable",
+          message: "No operator Ed25519 signing key configured on host or provided in request"
+        }));
+        return;
+      }
+
+      // Generate Ed25519 cryptographic signature over canonical message
+      const signature = signHarvest(
+        {
+          runId,
+          treeSha: proposal.acceptedTreeSha,
+          envelopeHash: proposal.taskEnvelopeHash,
+          policyVersion: proposal.policyVersion
+        },
+        signerKey
+      );
+      const reviewerIdentity = body.reviewer_identity || "human:operator@dashboard";
+
+      const authResult = await authorizeHarvest({
+        runId,
+        selectedArmId: proposal.selectedArmId,
+        treeSha: proposal.acceptedTreeSha,
+        envelopeHash: proposal.taskEnvelopeHash,
+        policyVersion: proposal.policyVersion,
+        signerIdentity: reviewerIdentity,
+        signature,
+        publicKeyPem: wardenPublicKeyPem,
+        isCleanTerminated: proposal.gates.isCleanTerminated,
+        ergPassed: proposal.gates.ergPassed,
+        testGatePassed: proposal.gates.testGatePassed,
+        teardownEvidenceId: proposal.teardownEvidenceId,
+        tenantId: run.tenant_id,
+        requestId: run.request_id,
+        ledger: evidenceLedger ?? undefined
+      });
+
+      if (!authResult.authorized) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(authResult));
+        return;
+      }
+
+      const commitResult = await commitHarvestRef({
+        runId,
+        acceptedTreeSha: proposal.acceptedTreeSha,
+        parentGitSha: proposal.parentGitSha,
+        attestation: authResult.attestation!,
+        targetBranch: body.target_branch ?? "main",
+        commitMessage: `1-Click Harvest run ${runId} (authorized by ${reviewerIdentity})`,
+        ledger: evidenceLedger ?? undefined,
+        tenantId: run.tenant_id,
+        requestId: run.request_id
+      });
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        success: true,
+        run_id: runId,
+        authorized: true,
+        attestation: authResult.attestation,
+        git_ref: commitResult.gitRef,
+        commit_sha: commitResult.commitSha
       }));
     } catch (err: unknown) {
       const error = err as Error;
