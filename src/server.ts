@@ -32,6 +32,7 @@ import {
 } from "./core/tournament.js";
 import { SupabaseTournamentArmStore } from "./adapters/supabase/tournamentRepo.js";
 import { getDashboardHtml } from "./ui/dashboardHtml.js";
+import { TailscalePruner } from "./core/tailscalePruner.js";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -49,6 +50,7 @@ let inferenceBroker: InferenceBroker | null = null;
 let recoveryEngine: RecoveryEngine | null = null;
 let tournamentArmStore: TournamentArmStore | null = null;
 let tournamentArbitrator: TournamentArbitrator | null = null;
+let tailscalePruner: TailscalePruner | null = null;
 let wardenPublicKeyPem = "";
 let wardenPrivateKeyPem = "";
 
@@ -141,9 +143,27 @@ try {
       .catch((err) => {
         console.error("[StartupRecovery] Error during boot recovery:", err);
       });
+    tailscalePruner = new TailscalePruner({
+      tailscaleClient,
+      runStore: runsRepo,
+      leaseManager,
+      evidenceLedger: evidenceLedger ?? undefined,
+      maxAgeMs: parseInt(process.env.TAILSCALE_MAX_AGE_MS || "3600000", 10),
+      pruneIntervalMs: parseInt(process.env.TAILSCALE_PRUNE_INTERVAL_MS || "600000", 10)
+    });
   }
 } catch (err) {
   console.warn("Supabase credentials not configured or failed to initialize, running in memory-fallback mode:", err);
+}
+
+if (!tailscalePruner) {
+  const tsClient = new TailscaleClient();
+  tailscalePruner = new TailscalePruner({
+    tailscaleClient: tsClient,
+    runStore: runsRepo ?? undefined,
+    leaseManager: leaseManager ?? undefined,
+    evidenceLedger: evidenceLedger ?? undefined
+  });
 }
 
 if (!tournamentArmStore) {
@@ -1171,7 +1191,70 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 10. Default Not Found
+  // 10. Automated Tailscale Device & Key Pruning (POST /v1/tailscale/prune or POST /tailscale/prune)
+  if ((pathname === "/v1/tailscale/prune" || pathname === "/tailscale/prune") && req.method === "POST") {
+    if (!tailscalePruner) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "PrunerUnavailable", message: "Tailscale pruner is not initialized" }));
+      return;
+    }
+
+    try {
+      interface PruneRequestBody {
+        dry_run?: boolean;
+        dryRun?: boolean;
+        max_age_minutes?: number;
+        maxAgeMinutes?: number;
+      }
+      const body = await parseJsonBody<PruneRequestBody>(req).catch(() => ({} as PruneRequestBody));
+
+      const dryRun = body.dry_run ?? body.dryRun;
+      const maxAgeMinutes = body.max_age_minutes ?? body.maxAgeMinutes;
+      const maxAgeMs = maxAgeMinutes ? maxAgeMinutes * 60 * 1000 : undefined;
+
+      const result = await tailscalePruner.pruneStaleNodesAndKeys({
+        dryRun,
+        maxAgeMs
+      });
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 10b. Tailscale Pruning Status Query (GET /v1/tailscale/prune/status or GET /tailscale/prune/status)
+  if (
+    (pathname === "/v1/tailscale/prune/status" || pathname === "/tailscale/prune/status") &&
+    (req.method === "GET" || req.method === "HEAD")
+  ) {
+    if (!tailscalePruner) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "PrunerUnavailable", message: "Tailscale pruner is not initialized" }));
+      return;
+    }
+
+    try {
+      const status = tailscalePruner.getStatus();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.method === "HEAD") {
+        res.end();
+        return;
+      }
+      res.end(JSON.stringify(status));
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 11. Default Not Found
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "not_found" }));
 });
@@ -1185,19 +1268,28 @@ server.listen(PORT, HOST, async () => {
     watchdog.startWatchdog(10000);
     console.log("[SystemdWatchdog] Notified READY=1 and initiated 10s heartbeats.");
   }
+  if (tailscalePruner && process.env.TAILSCALE_PRUNER_DISABLED !== "true") {
+    tailscalePruner.startDaemon();
+  }
 });
 
 process.on("SIGTERM", () => {
-  console.log("Received SIGTERM. Stopping watchdog and shutting down server...");
+  console.log("Received SIGTERM. Stopping watchdog, pruning daemon, and shutting down server...");
   watchdog.stopWatchdog();
+  if (tailscalePruner) {
+    tailscalePruner.stopDaemon();
+  }
   server.close(() => {
     process.exit(0);
   });
 });
 
 process.on("SIGINT", () => {
-  console.log("Received SIGINT. Stopping watchdog and shutting down server...");
+  console.log("Received SIGINT. Stopping watchdog, pruning daemon, and shutting down server...");
   watchdog.stopWatchdog();
+  if (tailscalePruner) {
+    tailscalePruner.stopDaemon();
+  }
   server.close(() => {
     process.exit(0);
   });

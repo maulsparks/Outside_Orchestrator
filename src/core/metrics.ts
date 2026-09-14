@@ -365,5 +365,27 @@ export const metrics = {
   recoveryRunsTotal: metricsRegistry.registerCounter(
     "orchestrator_recovery_runs_total",
     "Total in-flight runs reconciled during crash recovery"
+  ),
+
+  // Automated Tailscale Device & Key Pruning
+  tailscalePruneCyclesTotal: metricsRegistry.registerCounter(
+    "orchestrator_tailscale_prune_cycles_total",
+    "Total Tailscale prune cycles executed by status"
+  ),
+  tailscalePrunedNodesTotal: metricsRegistry.registerCounter(
+    "orchestrator_tailscale_pruned_nodes_total",
+    "Total stale Tailscale sandbox nodes deauthorized and deleted"
+  ),
+  tailscalePrunedKeysTotal: metricsRegistry.registerCounter(
+    "orchestrator_tailscale_pruned_keys_total",
+    "Total expired or stale Tailscale sandbox auth keys deleted"
+  ),
+  tailscalePruneDurationSeconds: metricsRegistry.registerGauge(
+    "orchestrator_tailscale_prune_duration_seconds",
+    "Duration of the last Tailscale prune cycle in seconds"
+  ),
+  tailscaleLastPruneTimestampSeconds: metricsRegistry.registerGauge(
+    "orchestrator_tailscale_last_prune_timestamp_seconds",
+    "Unix timestamp of the last Tailscale prune execution in seconds"
   )
 };

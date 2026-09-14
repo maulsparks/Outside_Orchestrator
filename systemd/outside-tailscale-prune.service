@@ -1,0 +1,23 @@
+[Unit]
+Description=Outside Orchestrator - Tailscale Ephemeral Sandbox Pruner
+Documentation=https://github.com/maulsparks/Outside_Orchestrator
+After=network.target tailscaled.service outside-orchestrator.service
+Wants=tailscaled.service
+
+[Service]
+Type=oneshot
+User=orchestrator
+Group=orchestrator
+WorkingDirectory=/opt/outside-orchestrator
+EnvironmentFile=/etc/outside-orchestrator.env
+ExecStart=/usr/bin/node dist/scripts/prune-tailscale-devices.js --max-age-minutes 60
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tailscale-pruner

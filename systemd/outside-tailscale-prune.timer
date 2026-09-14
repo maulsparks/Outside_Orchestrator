@@ -1,0 +1,11 @@
+[Unit]
+Description=Outside Orchestrator - Tailscale Ephemeral Sandbox Pruner Timer
+Documentation=https://github.com/maulsparks/Outside_Orchestrator
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

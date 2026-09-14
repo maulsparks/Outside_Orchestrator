@@ -776,6 +776,14 @@ export function getDashboardHtml(): string {
         Refresh
       </button>
 
+      <button id="pruneBtn" class="btn" onclick="triggerTailscalePrune()" title="Deauthorizes stale ephemeral sandbox nodes and verifies absence">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        </svg>
+        Prune Nodes
+      </button>
+
       <button id="newRunBtn" class="btn btn-primary" onclick="openNewRunModal()">
         + New Run
       </button>
@@ -1545,6 +1553,33 @@ export function getDashboardHtml(): string {
         }
       } catch (err) {
         alert("Error creating run: " + err.message);
+      }
+    }
+
+    async function triggerTailscalePrune() {
+      const btn = document.getElementById("pruneBtn");
+      if (!confirm("Run automated Tailscale ephemeral sandbox node & key cleanup cycle now?")) {
+        return;
+      }
+      if (btn) btn.textContent = "Pruning...";
+
+      try {
+        const res = await fetch("/v1/tailscale/prune", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dryRun: false })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          alert("Pruning Completed in " + data.durationMs + "ms!\n- Pruned Nodes: " + (data.nodesPruned ? data.nodesPruned.length : 0) + "\n- Pruned Keys: " + (data.keysPruned ? data.keysPruned.length : 0) + "\n- Protected Nodes Skipped: " + data.protectedNodesSkipped + "\n- Active Nodes Retained: " + data.activeNodesRetained);
+          refreshAll();
+        } else {
+          alert("Pruning failed: " + (data.message || data.error));
+        }
+      } catch (err) {
+        alert("Error executing pruning: " + err.message);
+      } finally {
+        if (btn) btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> Prune Nodes';
       }
     }
   </script>

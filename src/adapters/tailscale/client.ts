@@ -36,6 +36,27 @@ export interface AuthKeyResult {
   expires: string;
 }
 
+export interface TailscaleKey {
+  id: string;
+  key?: string;
+  created?: string;
+  expires?: string;
+  capabilities?: {
+    devices?: {
+      create?: {
+        tags?: string[];
+        ephemeral?: boolean;
+        reusable?: boolean;
+        preauthorized?: boolean;
+      };
+    };
+  };
+  tags?: string[];
+  description?: string;
+  invalid?: boolean;
+  revoked?: boolean;
+}
+
 export const FORBIDDEN_SANDBOX_TAGS = [
   "tag:edge-control-prod",
   "tag:deployment-controller",
@@ -263,6 +284,60 @@ export class TailscaleClient {
     if (!res.ok && res.status !== 404) {
       const err = await res.text();
       throw new Error(`TailscaleDeleteDeviceError: Failed to delete device ${deviceId} (${res.status}): ${err}`);
+    }
+  }
+
+  /**
+   * Lists all auth keys in the tailnet.
+   */
+  async getAuthKeys(): Promise<TailscaleKey[]> {
+    const headers = await this.getAuthHeaders();
+    const res = await this.fetchFn(`${this.baseUrl}/api/v2/tailnet/${this.tailnet}/keys`, {
+      method: "GET",
+      headers
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`TailscaleKeysQueryError: Failed to list auth keys (${res.status}): ${err}`);
+    }
+
+    const data = (await res.json()) as { keys?: TailscaleKey[] };
+    return data.keys || [];
+  }
+
+  /**
+   * Fetches metadata for a single auth key.
+   */
+  async getAuthKey(keyId: string): Promise<TailscaleKey | null> {
+    const headers = await this.getAuthHeaders();
+    const res = await this.fetchFn(`${this.baseUrl}/api/v2/tailnet/${this.tailnet}/keys/${keyId}`, {
+      method: "GET",
+      headers
+    });
+
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`TailscaleKeyQueryError: Failed to get key ${keyId} (${res.status}): ${err}`);
+    }
+
+    return (await res.json()) as TailscaleKey;
+  }
+
+  /**
+   * Deletes an auth key from the tailnet.
+   */
+  async deleteAuthKey(keyId: string): Promise<void> {
+    const headers = await this.getAuthHeaders();
+    const res = await this.fetchFn(`${this.baseUrl}/api/v2/tailnet/${this.tailnet}/keys/${keyId}`, {
+      method: "DELETE",
+      headers
+    });
+
+    if (!res.ok && res.status !== 404) {
+      const err = await res.text();
+      throw new Error(`TailscaleDeleteKeyError: Failed to delete key ${keyId} (${res.status}): ${err}`);
     }
   }
 }
