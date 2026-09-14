@@ -165,6 +165,7 @@ const server = http.createServer(async (req, res) => {
         tier: "Tier 1 Edge/Control Plane",
         version: "0.1.0",
         node: process.env.HOSTNAME || "srv719637",
+        uptime: Math.floor(process.uptime()),
         timestamp: new Date().toISOString()
       })
     );
