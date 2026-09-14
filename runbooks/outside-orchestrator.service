@@ -6,6 +6,7 @@ Wants=tailscaled.service
 
 [Service]
 Type=notify
+NotifyAccess=all
 User=orchestrator
 Group=orchestrator
 WorkingDirectory=/opt/outside-orchestrator

@@ -42,7 +42,7 @@ test("notifyReady dispatches systemd-notify --ready when NOTIFY_SOCKET is config
   assert.equal(result, true);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].file, "/usr/bin/systemd-notify");
-  assert.deepEqual(calls[0].args, ["--ready"]);
+  assert.deepEqual(calls[0].args, [`--pid=${process.pid}`, "--ready"]);
 });
 
 test("notifyWatchdog dispatches systemd-notify --watchdog heartbeat", async () => {
@@ -60,7 +60,7 @@ test("notifyWatchdog dispatches systemd-notify --watchdog heartbeat", async () =
   assert.equal(result, true);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].file, "/usr/bin/systemd-notify");
-  assert.deepEqual(calls[0].args, ["--watchdog"]);
+  assert.deepEqual(calls[0].args, [`--pid=${process.pid}`, "--watchdog"]);
 });
 
 test("startWatchdog emits periodic heartbeats and stopWatchdog terminates timer", async () => {
