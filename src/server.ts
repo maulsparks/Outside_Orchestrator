@@ -317,9 +317,12 @@ const server = http.createServer(async (req, res) => {
       const agentsMdContent = rawBody.agentsMdContent ?? rawBody.agents_md_content;
       const agentsMdSha256 = rawBody.agentsMdSha256 ?? rawBody.agents_md_sha256 ?? (agentsMdContent ? computeAgentsMdSha256(agentsMdContent) : "0".repeat(64));
 
+      const requestId = rawBody.requestId || rawBody.request_id || `req-${crypto.randomUUID()}`;
+      const idempotencyKey = rawBody.idempotencyKey || rawBody.idempotency_key || `idem-${crypto.randomUUID()}`;
+
       const body: CreateRunRequest = {
-        requestId: rawBody.requestId || rawBody.request_id,
-        idempotencyKey: rawBody.idempotencyKey || rawBody.idempotency_key,
+        requestId,
+        idempotencyKey,
         tenantId: rawBody.tenantId || rawBody.tenant_id,
         repositoryId: rawBody.repositoryId || rawBody.repository_id || "repo-default",
         parentGitSha: rawBody.parentGitSha || rawBody.parent_git_sha,

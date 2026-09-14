@@ -1539,6 +1539,7 @@ export function getDashboardHtml(): string {
           body: JSON.stringify({
             tenant_id: tenantId,
             parent_git_sha: parentSha,
+            idempotency_key: "idem-" + Date.now() + "-" + Math.random().toString(36).substring(2, 9),
             budget: { max_cost_cents: maxCost }
           })
         });
@@ -1547,7 +1548,8 @@ export function getDashboardHtml(): string {
         if (res.ok) {
           closeNewRunModal();
           await fetchRuns();
-          selectRun(data.id);
+          const newId = data.run ? data.run.id : (data.id || null);
+          if (newId) selectRun(newId);
         } else {
           alert("Create run failed: " + (data.message || data.error));
         }
@@ -1571,7 +1573,9 @@ export function getDashboardHtml(): string {
         });
         const data = await res.json();
         if (res.ok) {
-          alert("Pruning Completed in " + data.durationMs + "ms!\n- Pruned Nodes: " + (data.nodesPruned ? data.nodesPruned.length : 0) + "\n- Pruned Keys: " + (data.keysPruned ? data.keysPruned.length : 0) + "\n- Protected Nodes Skipped: " + data.protectedNodesSkipped + "\n- Active Nodes Retained: " + data.activeNodesRetained);
+          const nPruned = data.nodesPruned ? data.nodesPruned.length : 0;
+          const kPruned = data.keysPruned ? data.keysPruned.length : 0;
+          alert("Pruning Completed in " + data.durationMs + "ms!\\n- Pruned Nodes: " + nPruned + "\\n- Pruned Keys: " + kPruned + "\\n- Protected Skipped: " + data.protectedNodesSkipped + "\\n- Active Retained: " + data.activeNodesRetained);
           refreshAll();
         } else {
           alert("Pruning failed: " + (data.message || data.error));
