@@ -172,3 +172,45 @@ The linter validates:
 1. **Zero Runtime Dependencies**: Strict assertion of 0 npm production packages.
 2. **AGENTS.md Non-Authority**: Scans instructions for prompt injections or authority expansions.
 3. **Tailscale Network Invariants**: Verifies strict isolated sandbox policy and absence of control tags on sandboxes.
+
+---
+
+## 8. Automated GitHub Actions CI/CD Pipeline
+
+The repository includes an enterprise continuous integration and continuous deployment workflow in [`.github/workflows/ci.yml`](file:///c:/Users/Michael/Outside_Orchestrator/Outside_Orchestrator/.github/workflows/ci.yml).
+
+### Pipeline Stages
+1. **Validate, Lint & Test (`validate` job)**:
+   - Triggers on all pull requests and pushes to `main`.
+   - Checks out the repository and configures Node.js 22.
+   - Runs `npm ci` to install pinned dependencies.
+   - Executes `npm run lint:policy` to enforce zero-dependency and isolation rules.
+   - Executes `npm run check` to verify TypeScript compilation.
+   - Executes `npm test` to run all 127 automated unit and acceptance tests.
+
+2. **Continuous Deployment (`deploy` job)**:
+   - Triggers on push to `main`, release tags (`v*`), or manual workflow dispatch.
+   - Guarded by concurrency group `production-deployment` (`cancel-in-progress: false`).
+   - Securely connects to the Hostinger VPS over SSH and executes [`scripts/deploy.sh`](file:///c:/Users/Michael/Outside_Orchestrator/Outside_Orchestrator/scripts/deploy.sh).
+   - Atomically updates code, builds artifacts, runs policy checks, restarts `outside-orchestrator.service`, and verifies HTTP health on port 3000.
+
+### Required GitHub Repository Secrets
+To enable automated deployments from GitHub Actions, configure the following secrets under **Settings → Secrets and variables → Actions**:
+
+| Secret Name | Description | Example / Default |
+|---|---|---|
+| `HOSTINGER_SSH_KEY` | Private SSH key authorized for the deployment user on the VPS | OpenSSH / Ed25519 Private Key PEM |
+| `HOSTINGER_HOST` | Hostinger VPS IP or hostname | `srv719637.hstgr.cloud` or `191.101.14.201` |
+| `HOSTINGER_USER` | Remote SSH user with permissions to restart the service | `root` |
+| `HOSTINGER_PORT` | SSH daemon listening port | `22` |
+
+### Manual Host Deployment Script
+Operators can also trigger deployment directly on the host or over SSH:
+```bash
+# Direct on VPS:
+bash /opt/outside-orchestrator/scripts/deploy.sh
+
+# Or from remote operator workstation:
+ssh root@100.81.98.73 "bash /opt/outside-orchestrator/scripts/deploy.sh"
+```
+

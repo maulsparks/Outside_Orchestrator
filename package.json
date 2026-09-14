@@ -9,7 +9,8 @@
     "test": "npm run build && node --test dist/tests/*.test.js dist/tests/acceptance/*.test.js",
     "check": "npm run build",
     "rehearse:dr": "npm run build && node dist/scripts/disaster-recovery-rehearsal.js",
-    "lint:policy": "npm run build && node dist/scripts/lint-policy.js"
+    "lint:policy": "npm run build && node dist/scripts/lint-policy.js",
+    "deploy": "bash scripts/deploy.sh"
   },
   "devDependencies": {
     "@types/node": "^22.20.2",

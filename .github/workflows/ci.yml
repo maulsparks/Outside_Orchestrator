@@ -1,0 +1,115 @@
+name: Outside Orchestrator CI/CD
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ============================================================================
+  # Stage 1: Validation, Security Linting & Test Verification
+  # ============================================================================
+  validate:
+    name: Validate, Lint & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Runtime (v22)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Development Dependencies
+        run: npm ci
+
+      - name: Verify Policy-as-Code & Security Invariants
+        run: npm run lint:policy
+
+      - name: Compile TypeScript Source
+        run: npm run check
+
+      - name: Execute Automated Test Suite
+        run: npm test
+
+  # ============================================================================
+  # Stage 2: Continuous Deployment to Hostinger VPS (Tier 1 Edge/Control Plane)
+  # ============================================================================
+  deploy:
+    name: Deploy to Hostinger VPS
+    needs: validate
+    if: |
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: production-deployment
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Check Deployment Credentials
+        id: check_creds
+        env:
+          SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
+        run: |
+          if [ -z "${SSH_KEY}" ]; then
+            echo "::warning ::HOSTINGER_SSH_KEY secret is not configured. Deployment step will be skipped."
+            echo "configured=false" >> $GITHUB_OUTPUT
+          else
+            echo "configured=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Configure SSH Key & Known Hosts
+        if: steps.check_creds.outputs.configured == 'true'
+        env:
+          SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
+          HOST: ${{ secrets.HOSTINGER_HOST || 'srv719637.hstgr.cloud' }}
+          PORT: ${{ secrets.HOSTINGER_PORT || '22' }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${PORT}" -H "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Execute Remote Deployment via SSH
+        if: steps.check_creds.outputs.configured == 'true'
+        env:
+          HOST: ${{ secrets.HOSTINGER_HOST || 'srv719637.hstgr.cloud' }}
+          USER: ${{ secrets.HOSTINGER_USER || 'root' }}
+          PORT: ${{ secrets.HOSTINGER_PORT || '22' }}
+        run: |
+          echo "Connecting to ${USER}@${HOST}:${PORT} to execute deployment..."
+          ssh -i ~/.ssh/deploy_key -p "${PORT}" -o StrictHostKeyChecking=accept-new "${USER}@${HOST}" \
+            "bash /opt/outside-orchestrator/scripts/deploy.sh"
+
+      - name: Deployment Instructions (When Secrets Absent)
+        if: steps.check_creds.outputs.configured == 'false'
+        run: |
+          echo "================================================================="
+          echo "Outside Orchestrator — Continuous Deployment Notice"
+          echo "================================================================="
+          echo "To enable automated deployment from GitHub Actions to the Hostinger VPS:"
+          echo "1. Go to repository Settings -> Secrets and variables -> Actions"
+          echo "2. Add the following Repository Secrets:"
+          echo "   - HOSTINGER_SSH_KEY: The Ed25519 private key authorized on the VPS"
+          echo "   - HOSTINGER_HOST:    srv719637.hstgr.cloud (or 191.101.14.201 / Tailscale IP)"
+          echo "   - HOSTINGER_USER:    root (default)"
+          echo "   - HOSTINGER_PORT:    22 (default)"
+          echo "================================================================="
