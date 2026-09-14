@@ -5,6 +5,7 @@ import { HarvestAttestation } from "../../contracts/interfaces.js";
 import { EvidenceLedger, EvidenceStore, EvidenceRecord } from "../warden/ledger.js";
 import { RunStateStore } from "./stateMachine.js";
 import { PhaseEnvelopeStore, PhaseEnvelopeRecord } from "./dispatcher.js";
+import { TournamentArmStore } from "./tournament.js";
 
 export interface FrozenTestSuiteParams {
   testFiles: Record<string, string>; // path -> content
@@ -260,6 +261,7 @@ export interface PrepareHarvestProposalParams {
   runStore: RunStateStore;
   phaseStore?: PhaseEnvelopeStore;
   evidenceStore?: EvidenceStore;
+  armStore?: TournamentArmStore;
 }
 
 /**
@@ -289,9 +291,34 @@ export async function prepareHarvestProposal(
   );
   const policyVersion = run.policy_version;
   const tenantId = run.tenant_id;
-  const selectedArmId = "default";
 
-  let acceptedTreeSha = parentGitSha;
+  let selectedArmId = "default";
+  let tournamentWinnerTreeSha: string | undefined;
+
+  // Inspect tournament arms if armStore provided
+  if (params.armStore) {
+    try {
+      const arms = await params.armStore.listArmsForRun(params.runId);
+      if (arms.length > 0) {
+        const winner = arms.find((a) => a.selection_status === "winner");
+        if (!winner) {
+          blockingReasons.push(
+            "Tournament run requires deliberate winner selection before harvest (Contract §4 & §6.8)"
+          );
+          selectedArmId = "unselected";
+        } else {
+          selectedArmId = winner.arm_id;
+          if (winner.tree_sha) {
+            tournamentWinnerTreeSha = winner.tree_sha;
+          }
+        }
+      }
+    } catch {
+      // Non-blocking fallback
+    }
+  }
+
+  let acceptedTreeSha = tournamentWinnerTreeSha || parentGitSha;
   const phaseHistory: Array<{ phase: string; status?: string; attempt: number }> = [];
   const declaredChangesSet = new Set<string>();
 
@@ -314,7 +341,7 @@ export async function prepareHarvestProposal(
           }
         }
 
-        if (typeof out?.output_tree_sha === "string" && out.output_tree_sha.length > 0) {
+        if (!tournamentWinnerTreeSha && typeof out?.output_tree_sha === "string" && out.output_tree_sha.length > 0) {
           acceptedTreeSha = out.output_tree_sha;
         }
       }

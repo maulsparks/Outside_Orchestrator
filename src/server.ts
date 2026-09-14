@@ -23,6 +23,12 @@ import { computeAgentsMdSha256 } from "./core/policyIntegrity.js";
 import { RecoveryEngine, RecoverySummary } from "./core/recoveryEngine.js";
 import { metricsRegistry, metrics } from "./core/metrics.js";
 import { SystemdWatchdog } from "./core/watchdog.js";
+import {
+  TournamentArmStore,
+  InMemoryTournamentArmStore,
+  TournamentArbitrator
+} from "./core/tournament.js";
+import { SupabaseTournamentArmStore } from "./adapters/supabase/tournamentRepo.js";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -38,6 +44,8 @@ let liveDispatcher: LiveDispatcher | null = null;
 let multiPhaseSequencer: MultiPhaseSequencer | null = null;
 let inferenceBroker: InferenceBroker | null = null;
 let recoveryEngine: RecoveryEngine | null = null;
+let tournamentArmStore: TournamentArmStore | null = null;
+let tournamentArbitrator: TournamentArbitrator | null = null;
 let wardenPublicKeyPem = "";
 
 try {
@@ -45,6 +53,8 @@ try {
     const adminClient = getAdminClient();
     runsRepo = new SupabaseRunStateStore(adminClient);
     phaseEnvelopeStore = new SupabasePhaseEnvelopeStore(adminClient);
+    tournamentArmStore = new SupabaseTournamentArmStore(adminClient);
+    tournamentArbitrator = new TournamentArbitrator(tournamentArmStore);
     const leaseStorage = new SupabaseLeaseStorage(adminClient);
     leaseManager = new LeaseManager(leaseStorage, process.env.HOSTNAME || "srv719637");
     admissionEngine = new RequestAdmissionEngine(runsRepo, leaseManager);
@@ -129,6 +139,11 @@ try {
   }
 } catch (err) {
   console.warn("Supabase credentials not configured or failed to initialize, running in memory-fallback mode:", err);
+}
+
+if (!tournamentArmStore) {
+  tournamentArmStore = new InMemoryTournamentArmStore();
+  tournamentArbitrator = new TournamentArbitrator(tournamentArmStore);
 }
 
 function parseJsonBody<T>(req: http.IncomingMessage): Promise<T> {
@@ -400,7 +415,8 @@ const server = http.createServer(async (req, res) => {
         runId,
         runStore: runsRepo,
         phaseStore: phaseEnvelopeStore ?? undefined,
-        evidenceStore: evidenceLedger ? evidenceLedger.getStore() : undefined
+        evidenceStore: evidenceLedger ? evidenceLedger.getStore() : undefined,
+        armStore: tournamentArmStore ?? undefined
       });
 
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -447,7 +463,8 @@ const server = http.createServer(async (req, res) => {
         runId,
         runStore: runsRepo,
         phaseStore: phaseEnvelopeStore ?? undefined,
-        evidenceStore: evidenceLedger ? evidenceLedger.getStore() : undefined
+        evidenceStore: evidenceLedger ? evidenceLedger.getStore() : undefined,
+        armStore: tournamentArmStore ?? undefined
       });
 
       const result = await authorizeHarvest({
@@ -498,6 +515,176 @@ const server = http.createServer(async (req, res) => {
     } catch (err: unknown) {
       const error = err as Error;
       res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 4c. Tournament Subsystem Endpoints (Contract §4, §6.8, §9 & §10 AC 9)
+
+  // 4c.1 List & Evaluate Tournament Arms (GET /runs/:runId/tournament or GET /v1/runs/:runId/tournament)
+  const tournamentMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/tournament$/);
+  if (tournamentMatch && req.method === "GET") {
+    const runId = tournamentMatch[1];
+    if (!runsRepo || !tournamentArmStore || !tournamentArbitrator) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "StorageUnavailable" }));
+      return;
+    }
+
+    try {
+      const run = await runsRepo.getRun(runId);
+      if (!run) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "RunNotFound", runId }));
+        return;
+      }
+
+      const arms = await tournamentArmStore.listArmsForRun(runId);
+      const evaluations = tournamentArbitrator.evaluateArms(arms);
+      const winner = arms.find((a) => a.selection_status === "winner");
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        run_id: runId,
+        tenant_id: run.tenant_id,
+        total_arms: arms.length,
+        selected_winner: winner ? {
+          arm_id: winner.arm_id,
+          tree_sha: winner.tree_sha,
+          model_id: winner.model_id,
+          cost_cents: winner.cost_cents,
+          latency_ms: winner.latency_ms,
+          metadata: winner.metadata
+        } : null,
+        evaluations,
+        arms
+      }));
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 4c.2 Register Tournament Arm (POST /runs/:runId/tournament/arms or POST /v1/runs/:runId/tournament/arms)
+  const tournamentArmCreateMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/tournament\/arms$/);
+  if (tournamentArmCreateMatch && req.method === "POST") {
+    const runId = tournamentArmCreateMatch[1];
+    if (!runsRepo || !tournamentArmStore) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "StorageUnavailable" }));
+      return;
+    }
+
+    try {
+      const run = await runsRepo.getRun(runId);
+      if (!run) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "RunNotFound", runId }));
+        return;
+      }
+
+      const body = await parseJsonBody<{
+        arm_id: string;
+        status?: string;
+        model_id?: string;
+        tree_sha?: string;
+        cost_cents?: number;
+        latency_ms?: number;
+        selection_status?: string;
+        metadata?: Record<string, unknown>;
+      }>(req);
+
+      if (!body.arm_id) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "BadRequest", message: "arm_id is required" }));
+        return;
+      }
+
+      const arm = await tournamentArmStore.createArm({
+        run_id: runId,
+        tenant_id: run.tenant_id,
+        arm_id: body.arm_id,
+        status: (body.status as any) || "pending",
+        model_id: body.model_id,
+        tree_sha: body.tree_sha,
+        cost_cents: body.cost_cents,
+        latency_ms: body.latency_ms,
+        selection_status: (body.selection_status as any) || "unselected",
+        metadata: body.metadata
+      });
+
+      res.writeHead(201, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(arm));
+    } catch (err: unknown) {
+      const error = err as Error;
+      const statusCode = error.message.includes("TournamentArmConflict") ? 409 : 400;
+      res.writeHead(statusCode, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 4c.3 Select Tournament Winner (POST /runs/:runId/tournament/select or POST /v1/runs/:runId/tournament/select)
+  const tournamentSelectMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/tournament\/select$/);
+  if (tournamentSelectMatch && req.method === "POST") {
+    const runId = tournamentSelectMatch[1];
+    if (!runsRepo || !tournamentArmStore || !tournamentArbitrator) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "StorageUnavailable" }));
+      return;
+    }
+
+    try {
+      const run = await runsRepo.getRun(runId);
+      if (!run) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "RunNotFound", runId }));
+        return;
+      }
+
+      const body = await parseJsonBody<{
+        winner_arm_id: string;
+        rationale: string;
+        reviewer_identity?: string;
+      }>(req);
+
+      if (!body.winner_arm_id || !body.rationale) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          error: "BadRequest",
+          message: "winner_arm_id and rationale are required"
+        }));
+        return;
+      }
+
+      const result = await tournamentArbitrator.selectWinner({
+        runId,
+        winnerArmId: body.winner_arm_id,
+        rationale: body.rationale,
+        reviewerIdentity: body.reviewer_identity || "human:operator@platform.internal",
+        armStore: tournamentArmStore,
+        ledger: evidenceLedger ?? undefined,
+        runStore: runsRepo,
+        tenantId: run.tenant_id,
+        requestId: run.request_id,
+        policyVersion: run.policy_version
+      });
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        success: true,
+        run_id: runId,
+        selected_winner: result.winner,
+        runners_up: result.others,
+        ready_for_harvest: true
+      }));
+    } catch (err: unknown) {
+      const error = err as Error;
+      const statusCode = error.message.includes("TournamentArmNotFound") ? 404 : 400;
+      res.writeHead(statusCode, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
     }
     return;
