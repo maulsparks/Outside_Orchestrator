@@ -1279,9 +1279,13 @@ process.on("SIGTERM", () => {
   if (tailscalePruner) {
     tailscalePruner.stopDaemon();
   }
+  if (typeof (server as any).closeAllConnections === "function") {
+    (server as any).closeAllConnections();
+  }
   server.close(() => {
     process.exit(0);
   });
+  setTimeout(() => process.exit(0), 1500).unref();
 });
 
 process.on("SIGINT", () => {
@@ -1290,7 +1294,11 @@ process.on("SIGINT", () => {
   if (tailscalePruner) {
     tailscalePruner.stopDaemon();
   }
+  if (typeof (server as any).closeAllConnections === "function") {
+    (server as any).closeAllConnections();
+  }
   server.close(() => {
     process.exit(0);
   });
+  setTimeout(() => process.exit(0), 1500).unref();
 });
