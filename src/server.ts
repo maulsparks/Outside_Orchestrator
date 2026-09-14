@@ -192,48 +192,64 @@ const server = http.createServer(async (req, res) => {
   const pathname = url.pathname;
 
   // 1. Health Check & Operator Web Dashboard
-  if ((pathname === "/dashboard" || pathname === "/ui") && req.method === "GET") {
+  if ((pathname === "/dashboard" || pathname === "/ui") && (req.method === "GET" || req.method === "HEAD")) {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(getDashboardHtml());
+    if (req.method === "HEAD") {
+      res.end();
+    } else {
+      res.end(getDashboardHtml());
+    }
     return;
   }
 
-  if (pathname === "/" && req.method === "GET") {
+  if (pathname === "/" && (req.method === "GET" || req.method === "HEAD")) {
     const accept = req.headers.accept || "";
     if (accept.includes("text/html")) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(getDashboardHtml());
+      if (req.method === "HEAD") {
+        res.end();
+      } else {
+        res.end(getDashboardHtml());
+      }
       return;
     }
     // Default JSON health probe
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        status: "ok",
-        role: "Outside_Orchestrator",
-        tier: "Tier 1 Edge/Control Plane",
-        version: "0.1.0",
-        node: process.env.HOSTNAME || "srv719637",
-        uptime: Math.floor(process.uptime()),
-        timestamp: new Date().toISOString()
-      })
-    );
+    if (req.method === "HEAD") {
+      res.end();
+    } else {
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          role: "Outside_Orchestrator",
+          tier: "Tier 1 Edge/Control Plane",
+          version: "0.1.0",
+          node: process.env.HOSTNAME || "srv719637",
+          uptime: Math.floor(process.uptime()),
+          timestamp: new Date().toISOString()
+        })
+      );
+    }
     return;
   }
 
-  if (pathname === "/health" && req.method === "GET") {
+  if (pathname === "/health" && (req.method === "GET" || req.method === "HEAD")) {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        status: "ok",
-        role: "Outside_Orchestrator",
-        tier: "Tier 1 Edge/Control Plane",
-        version: "0.1.0",
-        node: process.env.HOSTNAME || "srv719637",
-        uptime: Math.floor(process.uptime()),
-        timestamp: new Date().toISOString()
-      })
-    );
+    if (req.method === "HEAD") {
+      res.end();
+    } else {
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          role: "Outside_Orchestrator",
+          tier: "Tier 1 Edge/Control Plane",
+          version: "0.1.0",
+          node: process.env.HOSTNAME || "srv719637",
+          uptime: Math.floor(process.uptime()),
+          timestamp: new Date().toISOString()
+        })
+      );
+    }
     return;
   }
 
