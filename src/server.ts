@@ -26,7 +26,8 @@ import { SystemdWatchdog } from "./core/watchdog.js";
 import {
   TournamentArmStore,
   InMemoryTournamentArmStore,
-  TournamentArbitrator
+  TournamentArbitrator,
+  ArbitrationPolicy
 } from "./core/tournament.js";
 import { SupabaseTournamentArmStore } from "./adapters/supabase/tournamentRepo.js";
 
@@ -543,12 +544,14 @@ const server = http.createServer(async (req, res) => {
       const arms = await tournamentArmStore.listArmsForRun(runId);
       const evaluations = tournamentArbitrator.evaluateArms(arms);
       const winner = arms.find((a) => a.selection_status === "winner");
+      const paretoFrontier = evaluations.filter((e) => e.isParetoOptimal).map((e) => e.arm.arm_id);
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
         run_id: runId,
         tenant_id: run.tenant_id,
         total_arms: arms.length,
+        pareto_frontier: paretoFrontier,
         selected_winner: winner ? {
           arm_id: winner.arm_id,
           tree_sha: winner.tree_sha,
@@ -568,7 +571,49 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 4c.2 Register Tournament Arm (POST /runs/:runId/tournament/arms or POST /v1/runs/:runId/tournament/arms)
+  // 4c.2 Dynamic Tournament Evaluation (POST /runs/:runId/tournament/evaluate or POST /v1/runs/:runId/tournament/evaluate)
+  const tournamentEvalMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/tournament\/evaluate$/);
+  if (tournamentEvalMatch && req.method === "POST") {
+    const runId = tournamentEvalMatch[1];
+    if (!runsRepo || !tournamentArmStore || !tournamentArbitrator) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "StorageUnavailable" }));
+      return;
+    }
+
+    try {
+      const run = await runsRepo.getRun(runId);
+      if (!run) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "RunNotFound", runId }));
+        return;
+      }
+
+      const body = await parseJsonBody<ArbitrationPolicy>(req);
+      const arms = await tournamentArmStore.listArmsForRun(runId);
+      const evaluations = tournamentArbitrator.evaluateArms(arms, body);
+      const paretoFrontier = evaluations.filter((e) => e.isParetoOptimal).map((e) => e.arm.arm_id);
+      const recommendedWinner = evaluations.find((e) => e.eligible && e.rank === 1)?.arm.arm_id || null;
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        run_id: runId,
+        strategy: body?.strategy || "lowest_cost",
+        total_arms: arms.length,
+        eligible_arms: evaluations.filter((e) => e.eligible).length,
+        pareto_frontier: paretoFrontier,
+        recommended_winner: recommendedWinner,
+        evaluations
+      }));
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 4c.3 Register Tournament Arm (POST /runs/:runId/tournament/arms or POST /v1/runs/:runId/tournament/arms)
   const tournamentArmCreateMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/tournament\/arms$/);
   if (tournamentArmCreateMatch && req.method === "POST") {
     const runId = tournamentArmCreateMatch[1];
@@ -627,7 +672,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 4c.3 Select Tournament Winner (POST /runs/:runId/tournament/select or POST /v1/runs/:runId/tournament/select)
+  // 4c.4 Select Tournament Winner (POST /runs/:runId/tournament/select or POST /v1/runs/:runId/tournament/select)
   const tournamentSelectMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/tournament\/select$/);
   if (tournamentSelectMatch && req.method === "POST") {
     const runId = tournamentSelectMatch[1];
@@ -660,10 +705,31 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      let effectiveWinnerArmId = body.winner_arm_id;
+      let selectionRationale = body.rationale;
+
+      // Automated Pareto-optimal winner selection
+      if (body.winner_arm_id === "auto_pareto") {
+        const arms = await tournamentArmStore.listArmsForRun(runId);
+        const evaluations = tournamentArbitrator.evaluateArms(arms, { strategy: "pareto_optimal" });
+        const bestArm = evaluations.find((e) => e.eligible && e.isParetoOptimal && e.rank === 1) ||
+                        evaluations.find((e) => e.eligible && e.rank === 1);
+        if (!bestArm) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            error: "NoEligibleParetoWinner",
+            message: "No eligible arms found on Pareto frontier for auto_pareto selection"
+          }));
+          return;
+        }
+        effectiveWinnerArmId = bestArm.arm.arm_id;
+        selectionRationale = `${selectionRationale || "Automated Pareto frontier selection"} (Selected Arm '${effectiveWinnerArmId}' with utility score ${bestArm.utilityScore})`;
+      }
+
       const result = await tournamentArbitrator.selectWinner({
         runId,
-        winnerArmId: body.winner_arm_id,
-        rationale: body.rationale,
+        winnerArmId: effectiveWinnerArmId,
+        rationale: selectionRationale,
         reviewerIdentity: body.reviewer_identity || "human:operator@platform.internal",
         armStore: tournamentArmStore,
         ledger: evidenceLedger ?? undefined,

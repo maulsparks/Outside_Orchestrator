@@ -164,11 +164,40 @@ export class InMemoryTournamentArmStore implements TournamentArmStore {
   }
 }
 
+export interface ArbitrationWeights {
+  cost?: number;    // Default 0.4
+  latency?: number; // Default 0.3
+  quality?: number; // Default 0.2 (test pass rate / score)
+  churn?: number;   // Default 0.1 (number of declared touched files)
+}
+
+export type FallbackTrigger =
+  | "worker_unavailable"
+  | "timeout"
+  | "execution_failed"
+  | "gate_failed";
+
+export interface ModelFallbackPolicy {
+  fallbackChain: string[];
+  triggers: FallbackTrigger[];
+  maxRetriesPerArm: number;
+  maxCostCentsPerArm?: number;
+}
+
 export interface ArbitrationPolicy {
-  strategy?: "lowest_cost" | "fastest_latency" | "manual";
+  strategy?: "lowest_cost" | "fastest_latency" | "pareto_optimal" | "weighted_composite" | "manual";
+  weights?: ArbitrationWeights;
   requireCleanTerminated?: boolean;
   requireErgPass?: boolean;
   requireTestPass?: boolean;
+  fallbackPolicy?: ModelFallbackPolicy;
+}
+
+export interface ArmEvaluationMetrics {
+  costCents: number;
+  latencyMs: number;
+  qualityScore: number;
+  churnFiles: number;
 }
 
 export interface ArmEvaluationResult {
@@ -176,7 +205,70 @@ export interface ArmEvaluationResult {
   eligible: boolean;
   score: number;
   rank: number;
+  isParetoOptimal: boolean;
+  dominatedBy: string[];
+  utilityScore: number;
+  metrics: ArmEvaluationMetrics;
   reasons: string[];
+}
+
+export interface ModelFallbackResult {
+  nextModel: string | null;
+  canFallback: boolean;
+  reason: string;
+}
+
+/**
+ * Resolves next model in an automated fallback chain when an arm encounters failures.
+ */
+export function resolveModelFallback(
+  currentModel: string,
+  trigger: FallbackTrigger,
+  policy: ModelFallbackPolicy,
+  currentAttempt: number = 1
+): ModelFallbackResult {
+  if (!policy.triggers.includes(trigger)) {
+    return {
+      nextModel: null,
+      canFallback: false,
+      reason: `Trigger '${trigger}' is not configured in fallback triggers: [${policy.triggers.join(", ")}]`
+    };
+  }
+
+  if (currentAttempt > policy.maxRetriesPerArm) {
+    return {
+      nextModel: null,
+      canFallback: false,
+      reason: `Max retries per arm reached (${currentAttempt} > ${policy.maxRetriesPerArm})`
+    };
+  }
+
+  const idx = policy.fallbackChain.indexOf(currentModel);
+  if (idx === -1) {
+    if (policy.fallbackChain.length > 0) {
+      return {
+        nextModel: policy.fallbackChain[0],
+        canFallback: true,
+        reason: `Current model '${currentModel}' not in chain; selecting primary fallback '${policy.fallbackChain[0]}'`
+      };
+    }
+    return { nextModel: null, canFallback: false, reason: "Fallback chain is empty" };
+  }
+
+  if (idx + 1 < policy.fallbackChain.length) {
+    const next = policy.fallbackChain[idx + 1];
+    return {
+      nextModel: next,
+      canFallback: true,
+      reason: `Advancing from '${currentModel}' to fallback '${next}' in chain`
+    };
+  }
+
+  return {
+    nextModel: null,
+    canFallback: false,
+    reason: `Fallback chain exhausted for '${currentModel}' (chain length: ${policy.fallbackChain.length})`
+  };
 }
 
 export interface SelectTournamentWinnerParams {
@@ -195,14 +287,14 @@ export interface SelectTournamentWinnerParams {
 /**
  * Tournament Arbitrator (Contract §4, §6.8, §9 & §10 AC 9).
  * Arbitrates Best-of-N executions, evaluates comparative metrics across arms,
- * and coordinates deliberate human winner selection prior to harvest.
+ * computes Pareto-optimal frontiers, and coordinates deliberate winner selection.
  */
 export class TournamentArbitrator {
   constructor(private readonly armStore: TournamentArmStore) {}
 
   /**
    * Evaluates all arms for a run against arbitration policy.
-   * Ranks eligible arms according to cost or latency strategy.
+   * Computes Pareto-optimal frontier, multi-criteria dominance, and utility rankings.
    */
   evaluateArms(arms: TournamentArm[], policy?: ArbitrationPolicy): ArmEvaluationResult[] {
     const strat = policy?.strategy ?? "lowest_cost";
@@ -210,7 +302,8 @@ export class TournamentArbitrator {
     const requireErg = policy?.requireErgPass ?? true;
     const requireTest = policy?.requireTestPass ?? true;
 
-    const evaluations: ArmEvaluationResult[] = arms.map((arm) => {
+    // 1. Initial eligibility and metric extraction
+    const rawEvals = arms.map((arm) => {
       const reasons: string[] = [];
       let eligible = true;
 
@@ -234,28 +327,116 @@ export class TournamentArbitrator {
         reasons.push("Arm failed frozen acceptance test suite");
       }
 
-      // Compute ranking score (lower is better)
-      let score = 0;
-      if (strat === "lowest_cost") {
-        score = arm.cost_cents * 10000 + arm.latency_ms;
-      } else if (strat === "fastest_latency") {
-        score = arm.latency_ms * 10000 + arm.cost_cents;
-      } else {
-        score = 0;
-      }
+      const qualityScore = typeof arm.metadata?.quality_score === "number"
+        ? (arm.metadata.quality_score as number)
+        : (arm.metadata?.tests_passed !== false ? 100 : 0);
+
+      const churnFiles = Array.isArray(arm.metadata?.declared_changed_files)
+        ? (arm.metadata.declared_changed_files as unknown[]).length
+        : Number(arm.metadata?.churn_files || 0);
+
+      const metrics: ArmEvaluationMetrics = {
+        costCents: arm.cost_cents,
+        latencyMs: arm.latency_ms,
+        qualityScore,
+        churnFiles
+      };
 
       return {
         arm,
         eligible,
-        score,
+        score: 0,
         rank: 0,
+        isParetoOptimal: false,
+        dominatedBy: [] as string[],
+        utilityScore: 0,
+        metrics,
         reasons
       };
     });
 
-    // Rank eligible arms first by score, ineligible arms last
-    const eligibleArms = evaluations.filter((e) => e.eligible).sort((a, b) => a.score - b.score);
-    const ineligibleArms = evaluations.filter((e) => !e.eligible);
+    const eligibleArms = rawEvals.filter((e) => e.eligible);
+
+    // 2. Compute Pareto Dominance among eligible arms
+    for (let i = 0; i < eligibleArms.length; i++) {
+      for (let j = 0; j < eligibleArms.length; j++) {
+        if (i === j) continue;
+        const A = eligibleArms[i];
+        const B = eligibleArms[j];
+
+        // A dominates B if A is no worse in all 4 metrics and strictly better in at least one
+        const noWorse =
+          A.metrics.costCents <= B.metrics.costCents &&
+          A.metrics.latencyMs <= B.metrics.latencyMs &&
+          A.metrics.qualityScore >= B.metrics.qualityScore &&
+          A.metrics.churnFiles <= B.metrics.churnFiles;
+
+        const strictlyBetter =
+          A.metrics.costCents < B.metrics.costCents ||
+          A.metrics.latencyMs < B.metrics.latencyMs ||
+          A.metrics.qualityScore > B.metrics.qualityScore ||
+          A.metrics.churnFiles < B.metrics.churnFiles;
+
+        if (noWorse && strictlyBetter) {
+          B.dominatedBy.push(A.arm.arm_id);
+        }
+      }
+    }
+
+    for (const item of eligibleArms) {
+      item.isParetoOptimal = item.dominatedBy.length === 0;
+    }
+
+    // 3. Compute Min-Max Normalized Utility Scores
+    if (eligibleArms.length > 0) {
+      const minCost = Math.min(...eligibleArms.map((e) => e.metrics.costCents));
+      const maxCost = Math.max(...eligibleArms.map((e) => e.metrics.costCents));
+      const minLat = Math.min(...eligibleArms.map((e) => e.metrics.latencyMs));
+      const maxLat = Math.max(...eligibleArms.map((e) => e.metrics.latencyMs));
+      const minQual = Math.min(...eligibleArms.map((e) => e.metrics.qualityScore));
+      const maxQual = Math.max(...eligibleArms.map((e) => e.metrics.qualityScore));
+      const minChurn = Math.min(...eligibleArms.map((e) => e.metrics.churnFiles));
+      const maxChurn = Math.max(...eligibleArms.map((e) => e.metrics.churnFiles));
+
+      const wCost = policy?.weights?.cost ?? 0.4;
+      const wLat = policy?.weights?.latency ?? 0.3;
+      const wQual = policy?.weights?.quality ?? 0.2;
+      const wChurn = policy?.weights?.churn ?? 0.1;
+      const totalWeight = wCost + wLat + wQual + wChurn || 1.0;
+
+      for (const item of eligibleArms) {
+        const normCost = maxCost > minCost ? (maxCost - item.metrics.costCents) / (maxCost - minCost) : 1.0;
+        const normLat = maxLat > minLat ? (maxLat - item.metrics.latencyMs) / (maxLat - minLat) : 1.0;
+        const normQual = maxQual > minQual ? (item.metrics.qualityScore - minQual) / (maxQual - minQual) : 1.0;
+        const normChurn = maxChurn > minChurn ? (maxChurn - item.metrics.churnFiles) / (maxChurn - minChurn) : 1.0;
+
+        item.utilityScore = Math.round(
+          ((wCost * normCost + wLat * normLat + wQual * normQual + wChurn * normChurn) / totalWeight) * 1000
+        ) / 1000;
+      }
+    }
+
+    // 4. Compute Strategy Specific Scores & Rankings
+    for (const item of eligibleArms) {
+      if (strat === "lowest_cost") {
+        item.score = item.metrics.costCents * 10000 + item.metrics.latencyMs;
+      } else if (strat === "fastest_latency") {
+        item.score = item.metrics.latencyMs * 10000 + item.metrics.costCents;
+      } else if (strat === "pareto_optimal") {
+        // Pareto optimal arms get score bonus (higher utility ranks first)
+        const paretoBonus = item.isParetoOptimal ? 10 : 0;
+        item.score = -(paretoBonus + item.utilityScore);
+      } else if (strat === "weighted_composite") {
+        // Higher utility ranks first
+        item.score = -item.utilityScore;
+      } else {
+        item.score = 0;
+      }
+    }
+
+    // Sort eligible arms by score (ascending: lower score is better)
+    eligibleArms.sort((a, b) => a.score - b.score);
+    const ineligibleArms = rawEvals.filter((e) => !e.eligible);
 
     let currentRank = 1;
     for (const item of eligibleArms) {
