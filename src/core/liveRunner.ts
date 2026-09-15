@@ -27,7 +27,10 @@ import { RunStateMachine, FactoryRunRecord } from "./stateMachine.js";
 import { RunStateStore } from "./stateMachine.js";
 import { PhaseEnvelopeStore } from "./dispatcher.js";
 import { EvidenceLedger } from "../warden/ledger.js";
-import { GitHubPrPublisher } from "../adapters/github/prPublisher.js";
+import {
+  GitHubPrPublisher,
+  parseRepository
+} from "../adapters/github/prPublisher.js";
 
 export interface LiveSandboxRunOptions {
   runId?: string;
@@ -51,6 +54,7 @@ export interface LiveSandboxRunOptions {
   repositoryId?: string;
   pollIntervalMs?: number;
   maxWaitBootMs?: number;
+  issueNumber?: number;
 }
 
 export interface LiveSandboxRunResult {
@@ -279,7 +283,6 @@ export class LiveSandboxRunner {
     });
 
     console.log(`[LiveSandboxRunner:${runId}] Harvest complete! Branch='${harvestResult.branch}', PR #${harvestResult.prNumber ?? "N/A"} (${harvestResult.prUrl ?? "no url"})`);
-
     return {
       runId,
       tenantId,

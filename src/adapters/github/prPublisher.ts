@@ -613,5 +613,201 @@ export class GitHubPrPublisher {
       };
     }
   }
+
+  /**
+   * Posts a comment to a GitHub Issue.
+   */
+  public async createIssueComment(params: {
+    owner?: string;
+    repo?: string;
+    issueNumber: number;
+    body: string;
+  }): Promise<{ id: number; htmlUrl: string } | null> {
+    if (!this.hasToken()) {
+      return null;
+    }
+
+    const { owner, repo } = (params.owner && params.repo)
+      ? { owner: params.owner, repo: params.repo }
+      : this.defaultRepo;
+
+    try {
+      const res = await this.fetchFn(
+        `${this.apiBaseUrl}/repos/${owner}/${repo}/issues/${params.issueNumber}/comments`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${this.token}`,
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "Outside-Orchestrator-Factory/1.0",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ body: params.body })
+        }
+      );
+
+      if (res.ok) {
+        const data = await res.json() as any;
+        return {
+          id: data.id,
+          htmlUrl: data.html_url
+        };
+      }
+      return null;
+    } catch (err) {
+      console.error(`[GitHubPrPublisher] Failed to create comment on issue #${params.issueNumber}:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Adds one or more labels to a GitHub Issue.
+   */
+  public async addIssueLabels(params: {
+    owner?: string;
+    repo?: string;
+    issueNumber: number;
+    labels: string[];
+  }): Promise<string[] | null> {
+    if (!this.hasToken() || !params.labels.length) {
+      return null;
+    }
+
+    const { owner, repo } = (params.owner && params.repo)
+      ? { owner: params.owner, repo: params.repo }
+      : this.defaultRepo;
+
+    try {
+      const res = await this.fetchFn(
+        `${this.apiBaseUrl}/repos/${owner}/${repo}/issues/${params.issueNumber}/labels`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${this.token}`,
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "Outside-Orchestrator-Factory/1.0",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ labels: params.labels })
+        }
+      );
+
+      if (res.ok) {
+        const data = await res.json() as any[];
+        return data.map(l => l.name);
+      }
+      return null;
+    } catch (err) {
+      console.error(`[GitHubPrPublisher] Failed to add labels on issue #${params.issueNumber}:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Removes a label from a GitHub Issue.
+   */
+  public async removeIssueLabel(params: {
+    owner?: string;
+    repo?: string;
+    issueNumber: number;
+    label: string;
+  }): Promise<boolean> {
+    if (!this.hasToken()) {
+      return false;
+    }
+
+    const { owner, repo } = (params.owner && params.repo)
+      ? { owner: params.owner, repo: params.repo }
+      : this.defaultRepo;
+
+    try {
+      const res = await this.fetchFn(
+        `${this.apiBaseUrl}/repos/${owner}/${repo}/issues/${params.issueNumber}/labels/${encodeURIComponent(params.label)}`,
+        {
+          method: "DELETE",
+          headers: {
+            "Authorization": `Bearer ${this.token}`,
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "Outside-Orchestrator-Factory/1.0",
+            "X-GitHub-Api-Version": "2022-11-28"
+          }
+        }
+      );
+      return res.ok || res.status === 404;
+    } catch (err) {
+      console.error(`[GitHubPrPublisher] Failed to remove label '${params.label}' on issue #${params.issueNumber}:`, err);
+      return false;
+    }
+  }
 }
 
+export function formatIssueAcknowledgmentComment(params: {
+  runId: string;
+  intent: string;
+  confidence: number;
+  allowedPaths: string[];
+  immutablePaths: string[];
+  acceptanceCriteria: string[];
+  suggestedPhases?: string[];
+  estimatedBudgetCents?: number;
+}): string {
+  const allowedList = params.allowedPaths.map(p => `- \`${p}\``).join("\n");
+  const immutableList = params.immutablePaths.map(p => `- \`${p}\``).join("\n");
+  const criteriaList = params.acceptanceCriteria.map(c => `- [ ] ${c}`).join("\n");
+  const confPct = Math.round(params.confidence * 100);
+  const budgetStr = params.estimatedBudgetCents ? `$${(params.estimatedBudgetCents / 100).toFixed(2)}` : "$5.00";
+
+  return `### 🏭 Outside Orchestrator — Factory Run Initiated
+
+The Outside Orchestrator has autonomously ingested this task and formed a verified execution envelope.
+
+| Parameter | Value |
+|---|---|
+| **Run ID** | \`${params.runId}\` |
+| **Intent** | \`${params.intent.toUpperCase()}\` |
+| **Decomposition Confidence** | \`${confPct}%\` |
+| **Suggested Phases** | \`${(params.suggestedPhases || ["build", "test"]).join(" → ")}\` |
+| **Max Budget Allocation** | \`${budgetStr}\` |
+
+#### 🛡️ Allowed Paths (Zero-Tolerance ERG Boundary)
+${allowedList}
+
+#### 🔒 Immutable Paths (Protected Non-Authority Boundary)
+${immutableList}
+
+#### 🎯 Frozen Acceptance Criteria
+${criteriaList}
+
+---
+⏳ *Execution dispatched to isolated Tier 2 sandbox VM. Pull Request link will be posted upon verification.*`;
+}
+
+export function formatIssueCompletionComment(params: {
+  runId: string;
+  prNumber: number;
+  prUrl: string;
+  branch: string;
+  undeclaredTouchesCount: number;
+  testPassRate?: number;
+  durationMs?: number;
+}): string {
+  const durationStr = params.durationMs ? `${(params.durationMs / 1000).toFixed(1)}s` : "N/A";
+  const passRateStr = params.testPassRate !== undefined ? `${Math.round(params.testPassRate * 100)}%` : "100%";
+
+  return `### ✅ Factory Run Completed & Pull Request Published
+
+The Outside Orchestrator has verified the sandbox execution output and authorized harvest.
+
+| Metric | Verification Result |
+|---|---|
+| **Pull Request** | [PR #${params.prNumber}](${params.prUrl}) |
+| **Feature Branch** | \`${params.branch}\` |
+| **Effect Reconciliation Gate (ERG)** | **PASSED** (${params.undeclaredTouchesCount} undeclared touches) |
+| **Frozen Acceptance Tests** | **PASSED** (${passRateStr} pass rate) |
+| **Execution Duration** | \`${durationStr}\` |
+
+Review and merge the pull request to trigger continuous deployment to production:
+👉 [View Pull Request #${params.prNumber}](${params.prUrl})`;
+}

@@ -214,7 +214,10 @@ if (!prMergeCoordinator) {
     githubPublisher: githubPrPublisher,
     deploymentEngine,
     runStore: runsRepo ?? undefined,
-    evidenceLedger: evidenceLedger ?? undefined
+    evidenceLedger: evidenceLedger ?? undefined,
+    taskDecomposer,
+    admissionEngine: admissionEngine ?? undefined,
+    liveRunner: liveRunner ?? undefined
   });
 }
 
