@@ -102,3 +102,33 @@ test("DelegationDispatcher includes user_prompt in envelope and factors into env
   assert.notEqual(resWithoutPrompt.envelopeHash, resWithPrompt.envelopeHash);
 });
 
+test("DelegationDispatcher sets max_fix_loops and defaults to 3", async () => {
+  const dispatcher = new DelegationDispatcher();
+  const run = makeRun();
+
+  const options = {
+    run,
+    phase: "build" as const,
+    phaseAttempt: 1,
+    taskEnvelopeHash: "a".repeat(64),
+    agentsMdSha256: "b".repeat(64),
+    allowedPaths: ["src/**"],
+    immutablePaths: ["AGENTS.md"],
+    acceptanceCriteria: ["AC 1"],
+    commandPolicyId: "policy-standard",
+    runtimeCredentialReference: "cred-ref-001",
+    ttlSeconds: 3600
+  };
+
+  const resDefault = await dispatcher.buildAndDispatchEnvelope(options);
+  assert.equal(resDefault.envelope.max_fix_loops, 3);
+
+  const resCustom = await dispatcher.buildAndDispatchEnvelope({
+    ...options,
+    maxFixLoops: 5
+  });
+  assert.equal(resCustom.envelope.max_fix_loops, 5);
+  assert.notEqual(resDefault.envelopeHash, resCustom.envelopeHash);
+});
+
+

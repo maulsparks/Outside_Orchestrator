@@ -244,6 +244,9 @@ export class LiveDispatcher {
         : (config.agentsMdSha256 ?? "0".repeat(64));
 
       const userPrompt = (run.envelope as Record<string, unknown>)?.user_prompt as string | undefined;
+      const maxFixLoops = typeof (run.envelope as Record<string, unknown>)?.max_fix_loops === "number"
+        ? Number((run.envelope as Record<string, unknown>).max_fix_loops)
+        : 3;
       const runAcceptance = ((run.envelope as Record<string, unknown>)?.acceptance_criteria as string[]) ?? ["Phase outputs valid results within allowed paths"];
 
       const dispatchOptions: BuildDelegationOptions = {
@@ -253,6 +256,7 @@ export class LiveDispatcher {
         taskEnvelopeHash: "sha256-default-task-envelope",
         agentsMdSha256: resolvedAgentsMdSha256,
         userPrompt,
+        maxFixLoops,
         allowedPaths,
         immutablePaths: config.immutablePaths ?? ["AGENTS.md"],
         acceptanceCriteria: runAcceptance,
@@ -333,11 +337,14 @@ export class LiveDispatcher {
         try {
           const sRes = await fetch(`${sandboxBaseUrl}/status`, { signal: AbortSignal.timeout(3000) });
           if (sRes.ok) {
-            const sData = (await sRes.json()) as { status: string };
+            const sData = (await sRes.json()) as { status: string; fix_loop?: number; max_fix_loops?: number; last_error?: string };
+            if (sData.status === "correcting") {
+              console.log(`[LiveDispatcher:${runId}] Inside execution in correction loop ${sData.fix_loop ?? 1}/${sData.max_fix_loops ?? 3}: ${sData.last_error ?? "retrying..."}`);
+            }
             if (sData.status === "completed" || sData.status === "failed") {
               executionComplete = true;
               lastReportedStatus = sData.status;
-              console.log(`[LiveDispatcher:${runId}] Inside execution reported status: '${sData.status}'`);
+              console.log(`[LiveDispatcher:${runId}] Inside execution reported status: '${sData.status}' (loop ${sData.fix_loop ?? 1}/${sData.max_fix_loops ?? 3})`);
             }
           }
         } catch {

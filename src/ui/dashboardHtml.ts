@@ -908,8 +908,9 @@ export function getDashboardHtml(): string {
             <div id="metaUserPrompt" style="font-family: var(--font-mono); font-size: 0.85rem; color: #fff; white-space: pre-wrap; background: rgba(0,0,0,0.25); padding: 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); max-height: 140px; overflow-y: auto;">
               --
             </div>
-            <div style="display: flex; gap: 1rem; margin-top: 0.6rem; font-size: 0.75rem; color: var(--text-muted);">
+            <div style="display: flex; gap: 1.5rem; margin-top: 0.6rem; font-size: 0.75rem; color: var(--text-muted);">
               <div><strong style="color: var(--text-dim);">Acceptance Criteria:</strong> <span id="metaAcceptance">--</span></div>
+              <div><strong style="color: var(--text-dim);">Max Fix Loops:</strong> <span id="metaFixLoops" style="color: var(--cyan); font-family: var(--font-mono);">3 (default)</span></div>
             </div>
           </div>
 
@@ -1111,6 +1112,10 @@ export function getDashboardHtml(): string {
         <input type="number" id="inputMaxCost" class="form-input" value="1000">
       </div>
       <div class="form-group">
+        <label class="form-label">Max Fix Loops (Bounded Correction)</label>
+        <input type="number" id="inputMaxFixLoops" class="form-input" value="3" min="1" max="10">
+      </div>
+      <div class="form-group">
         <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">
           <input type="checkbox" id="inputAutoDispatch" checked style="accent-color: var(--cyan); width: 16px; height: 16px; cursor: pointer;">
           <span style="color: #fff;">Immediately dispatch execution to Tier 2 sandbox VM</span>
@@ -1308,6 +1313,8 @@ export function getDashboardHtml(): string {
       document.getElementById("promptIntentBadge").textContent = \`intent: \${run.envelope?.intent || "execute"}\`;
       const crit = run.envelope?.acceptance_criteria;
       document.getElementById("metaAcceptance").textContent = Array.isArray(crit) ? crit.join("; ") : (crit || "Valid phase result");
+      const fixLoops = run.envelope?.max_fix_loops ?? 3;
+      document.getElementById("metaFixLoops").textContent = \`\${fixLoops} bounded\`;
 
       // Update Metadata Deck
       document.getElementById("metaRunId").textContent = run.id;
@@ -1614,6 +1621,7 @@ export function getDashboardHtml(): string {
       const tenantId = document.getElementById("inputTenantId").value;
       const parentSha = document.getElementById("inputParentSha").value;
       const maxCost = parseInt(document.getElementById("inputMaxCost").value, 10) || 1000;
+      const maxFixLoops = parseInt(document.getElementById("inputMaxFixLoops")?.value, 10) || 3;
       const userPrompt = document.getElementById("inputUserPrompt") ? document.getElementById("inputUserPrompt").value.trim() : "";
       const autoDispatch = document.getElementById("inputAutoDispatch") ? document.getElementById("inputAutoDispatch").checked : true;
 
@@ -1625,6 +1633,7 @@ export function getDashboardHtml(): string {
             tenant_id: tenantId,
             parent_git_sha: parentSha,
             user_prompt: userPrompt || undefined,
+            max_fix_loops: maxFixLoops,
             idempotency_key: "idem-" + Date.now() + "-" + Math.random().toString(36).substring(2, 9),
             budget: { max_cost_cents: maxCost }
           })

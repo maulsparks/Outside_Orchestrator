@@ -26,6 +26,10 @@ const path = require('path');
 
 let currentDelegation = null;
 let runStatus = "ready";
+let fixLoopCount = 0;
+let maxFixLoops = 3;
+let lastFixError = null;
+const fixLoopHistory = [];
 const traceEvents = [];
 let changedFiles = [];
 const startTime = new Date().toISOString();
@@ -55,13 +59,16 @@ const server = http.createServer((req, res) => {
     }));
   }
 
-  // Delegation receiver (single-phase isolated)
+  // Delegation receiver (single-phase isolated with bounded correction loops)
   if (req.method === 'POST' && url.pathname === '/delegate') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
       try {
         currentDelegation = JSON.parse(body);
+        maxFixLoops = typeof currentDelegation.max_fix_loops === 'number' ? currentDelegation.max_fix_loops : 3;
+        fixLoopCount = 0;
+        lastFixError = null;
         runStatus = "in_progress";
         addTraceEvent("delegation_received", {
           run_id: currentDelegation.run_id,
@@ -69,7 +76,8 @@ const server = http.createServer((req, res) => {
           attempt: currentDelegation.attempt,
           parent_sha: currentDelegation.parent_sha,
           allowed_paths: currentDelegation.allowed_paths,
-          user_prompt: currentDelegation.user_prompt || null
+          user_prompt: currentDelegation.user_prompt || null,
+          max_fix_loops: maxFixLoops
         });
 
         // Materialize human user prompt into sandbox working tree
@@ -84,35 +92,94 @@ const server = http.createServer((req, res) => {
           }
         }
 
-        // Execute delegated phase work
+        // Bounded correction loop execution (MAX_FIX_LOOPS)
         const targetPath = (currentDelegation.allowed_paths && currentDelegation.allowed_paths[0])
           ? currentDelegation.allowed_paths[0].replace(/\\/\\*.*$/, '')
           : 'output';
-        
         const outputDir = path.join('/tmp/sandbox-repo', targetPath);
-        try {
-          fs.mkdirSync(outputDir, { recursive: true });
-          const artifactFile = path.join(outputDir, 'phase_result.json');
-          fs.writeFileSync(artifactFile, JSON.stringify({
-            status: "success",
-            phase: currentDelegation.phase,
-            user_prompt: currentDelegation.user_prompt || null,
-            timestamp: new Date().toISOString()
-          }, null, 2));
-          changedFiles = [path.join(targetPath, 'phase_result.json').replace(/\\\\/g, '/')];
-        } catch (err) {
-          changedFiles = ['output/phase_result.json'];
+
+        let loopSuccess = false;
+        while (fixLoopCount < maxFixLoops && !loopSuccess) {
+          fixLoopCount++;
+          addTraceEvent("fix_loop_started", {
+            loop: fixLoopCount,
+            max_loops: maxFixLoops,
+            phase: currentDelegation.phase
+          });
+
+          try {
+            const policy = currentDelegation.command_policy_id;
+            if (policy === "fail_first_loop" && fixLoopCount === 1) {
+              throw new Error("Simulated test/linter failure on attempt 1");
+            } else if (policy === "always_fail") {
+              throw new Error("Simulated persistent failure on attempt " + fixLoopCount);
+            }
+
+            fs.mkdirSync(outputDir, { recursive: true });
+            const artifactFile = path.join(outputDir, 'phase_result.json');
+            fs.writeFileSync(artifactFile, JSON.stringify({
+              status: "success",
+              phase: currentDelegation.phase,
+              fix_loops_executed: fixLoopCount,
+              user_prompt: currentDelegation.user_prompt || null,
+              timestamp: new Date().toISOString()
+            }, null, 2));
+            changedFiles = [path.join(targetPath, 'phase_result.json').replace(/\\\\/g, '/')];
+
+            loopSuccess = true;
+            runStatus = "completed";
+
+            addTraceEvent("fix_loop_passed", {
+              loop: fixLoopCount,
+              max_loops: maxFixLoops,
+              phase: currentDelegation.phase
+            });
+
+            addTraceEvent("phase_completed", {
+              phase: currentDelegation.phase,
+              declared_changed_files: changedFiles,
+              fix_loops_executed: fixLoopCount,
+              exit_code: 0
+            });
+          } catch (err) {
+            lastFixError = err.message;
+            fixLoopHistory.push({
+              loop: fixLoopCount,
+              error: err.message,
+              timestamp: new Date().toISOString()
+            });
+
+            addTraceEvent("fix_loop_attempt_failed", {
+              loop: fixLoopCount,
+              max_loops: maxFixLoops,
+              error: err.message
+            });
+
+            if (fixLoopCount < maxFixLoops) {
+              runStatus = "correcting";
+              try {
+                const handoffDir = '/tmp/sandbox-repo/context_handoff';
+                fs.mkdirSync(handoffDir, { recursive: true });
+                fs.writeFileSync(path.join(handoffDir, 'last_fix_error.txt'), "Loop " + fixLoopCount + " failed: " + err.message);
+              } catch (_) {}
+            } else {
+              runStatus = "failed";
+              addTraceEvent("fix_loops_exhausted", {
+                total_attempts: fixLoopCount,
+                max_loops: maxFixLoops,
+                final_error: err.message
+              });
+              addTraceEvent("phase_failed", {
+                phase: currentDelegation.phase,
+                exit_code: 1,
+                error: err.message
+              });
+            }
+          }
         }
 
-        addTraceEvent("phase_completed", {
-          phase: currentDelegation.phase,
-          declared_changed_files: changedFiles,
-          exit_code: 0
-        });
-        runStatus = "completed";
-
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ accepted: true, status: runStatus }));
+        res.end(JSON.stringify({ accepted: true, status: runStatus, fix_loops_executed: fixLoopCount }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
@@ -121,12 +188,15 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Status query
+  // Status query (includes correction loop telemetry)
   if (req.method === 'GET' && url.pathname === '/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ 
       status: runStatus, 
       trace_count: traceEvents.length,
+      fix_loop: fixLoopCount,
+      max_fix_loops: maxFixLoops,
+      last_error: lastFixError,
       current_phase: currentDelegation ? currentDelegation.phase : null
     }));
   }
@@ -147,7 +217,8 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({
       manifest_sha256: hash,
       event_count: traceEvents.length,
-      declared_changed_files: changedFiles
+      declared_changed_files: changedFiles,
+      fix_loops_executed: fixLoopCount
     }));
   }
 
@@ -167,6 +238,9 @@ const server = http.createServer((req, res) => {
       phase: currentDelegation ? currentDelegation.phase : "unknown",
       trace_manifest_sha256: hash,
       declared_changed_files: changedFiles,
+      fix_loops_executed: fixLoopCount,
+      max_fix_loops: maxFixLoops,
+      fix_loop_history: fixLoopHistory,
       traces: traceEvents,
       summary: "Advisory execution package emitted by Inside Orchestrator"
     };
@@ -230,6 +304,10 @@ from urllib.parse import urlparse
 PORT = ${port}
 RUN_STATUS = "ready"
 CURRENT_DELEGATION = None
+FIX_LOOP_COUNT = 0
+MAX_FIX_LOOPS = 3
+LAST_FIX_ERROR = None
+FIX_LOOP_HISTORY = []
 TRACE_EVENTS = []
 CHANGED_FILES = []
 START_TIME = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
@@ -277,6 +355,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(200, {
                 "status": RUN_STATUS,
                 "trace_count": len(TRACE_EVENTS),
+                "fix_loop": FIX_LOOP_COUNT,
+                "max_fix_loops": MAX_FIX_LOOPS,
+                "last_error": LAST_FIX_ERROR,
                 "current_phase": CURRENT_DELEGATION.get("phase") if CURRENT_DELEGATION else None
             })
         elif url.path == '/trace/manifest.sha256':
@@ -290,7 +371,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(200, {
                 "manifest_sha256": compute_manifest_sha256(),
                 "event_count": len(TRACE_EVENTS),
-                "declared_changed_files": CHANGED_FILES
+                "declared_changed_files": CHANGED_FILES,
+                "fix_loops_executed": FIX_LOOP_COUNT
             })
         elif url.path == '/trace/events':
             trace_jsonl = get_trace_jsonl().encode('utf-8')
@@ -306,6 +388,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "phase": CURRENT_DELEGATION.get("phase", "unknown") if CURRENT_DELEGATION else "unknown",
                 "trace_manifest_sha256": manifest_hash,
                 "declared_changed_files": CHANGED_FILES,
+                "fix_loops_executed": FIX_LOOP_COUNT,
+                "max_fix_loops": MAX_FIX_LOOPS,
+                "fix_loop_history": FIX_LOOP_HISTORY,
                 "traces": TRACE_EVENTS,
                 "summary": "Advisory execution package emitted by Inside Orchestrator"
             }
@@ -314,7 +399,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(404, {"error": "not_found"})
 
     def do_POST(self):
-        global RUN_STATUS, CURRENT_DELEGATION, CHANGED_FILES
+        global RUN_STATUS, CURRENT_DELEGATION, CHANGED_FILES, FIX_LOOP_COUNT, MAX_FIX_LOOPS, LAST_FIX_ERROR
         url = urlparse(self.path)
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length)
@@ -322,35 +407,115 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if url.path == '/delegate':
             try:
                 CURRENT_DELEGATION = json.loads(body.decode('utf-8'))
+                MAX_FIX_LOOPS = CURRENT_DELEGATION.get("max_fix_loops", 3)
+                FIX_LOOP_COUNT = 0
+                LAST_FIX_ERROR = None
                 RUN_STATUS = "in_progress"
                 add_trace("delegation_received", {
                     "run_id": CURRENT_DELEGATION.get("run_id"),
                     "phase": CURRENT_DELEGATION.get("phase"),
                     "attempt": CURRENT_DELEGATION.get("attempt"),
                     "parent_sha": CURRENT_DELEGATION.get("parent_sha"),
-                    "allowed_paths": CURRENT_DELEGATION.get("allowed_paths")
+                    "allowed_paths": CURRENT_DELEGATION.get("allowed_paths"),
+                    "user_prompt": CURRENT_DELEGATION.get("user_prompt"),
+                    "max_fix_loops": MAX_FIX_LOOPS
                 })
+
+                # Materialize human user prompt into sandbox working tree
+                user_prompt = CURRENT_DELEGATION.get("user_prompt")
+                if user_prompt:
+                    try:
+                        with open('/tmp/sandbox-repo/user_prompt.md', 'w') as f:
+                            f.write(user_prompt)
+                        handoff_dir = '/tmp/sandbox-repo/context_handoff'
+                        os.makedirs(handoff_dir, exist_ok=True)
+                        with open(os.path.join(handoff_dir, 'user_prompt.md'), 'w') as f:
+                            f.write(user_prompt)
+                    except Exception:
+                        pass
 
                 allowed_paths = CURRENT_DELEGATION.get("allowed_paths", ["output/**"])
                 target_path = allowed_paths[0].replace("/**", "").replace("/*", "") if allowed_paths else "output"
                 output_dir = os.path.join("/tmp/sandbox-repo", target_path)
-                os.makedirs(output_dir, exist_ok=True)
-                artifact_file = os.path.join(output_dir, "phase_result.json")
-                with open(artifact_file, "w") as f:
-                    json.dump({
-                        "status": "success",
-                        "phase": CURRENT_DELEGATION.get("phase"),
-                        "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-                    }, f, indent=2)
 
-                CHANGED_FILES = [f"{target_path}/phase_result.json"]
-                add_trace("phase_completed", {
-                    "phase": CURRENT_DELEGATION.get("phase"),
-                    "declared_changed_files": CHANGED_FILES,
-                    "exit_code": 0
-                })
-                RUN_STATUS = "completed"
-                self.send_json(200, {"accepted": True, "status": RUN_STATUS})
+                loop_success = False
+                while FIX_LOOP_COUNT < MAX_FIX_LOOPS and not loop_success:
+                    FIX_LOOP_COUNT += 1
+                    add_trace("fix_loop_started", {
+                        "loop": FIX_LOOP_COUNT,
+                        "max_loops": MAX_FIX_LOOPS,
+                        "phase": CURRENT_DELEGATION.get("phase")
+                    })
+
+                    try:
+                        policy = CURRENT_DELEGATION.get("command_policy_id")
+                        if policy == "fail_first_loop" and FIX_LOOP_COUNT == 1:
+                            raise RuntimeError("Simulated test/linter failure on attempt 1")
+                        elif policy == "always_fail":
+                            raise RuntimeError(f"Simulated persistent failure on attempt {FIX_LOOP_COUNT}")
+
+                        os.makedirs(output_dir, exist_ok=True)
+                        artifact_file = os.path.join(output_dir, "phase_result.json")
+                        with open(artifact_file, "w") as f:
+                            json.dump({
+                                "status": "success",
+                                "phase": CURRENT_DELEGATION.get("phase"),
+                                "fix_loops_executed": FIX_LOOP_COUNT,
+                                "user_prompt": user_prompt,
+                                "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                            }, f, indent=2)
+
+                        CHANGED_FILES = [f"{target_path}/phase_result.json"]
+                        loop_success = True
+                        RUN_STATUS = "completed"
+
+                        add_trace("fix_loop_passed", {
+                            "loop": FIX_LOOP_COUNT,
+                            "max_loops": MAX_FIX_LOOPS,
+                            "phase": CURRENT_DELEGATION.get("phase")
+                        })
+                        add_trace("phase_completed", {
+                            "phase": CURRENT_DELEGATION.get("phase"),
+                            "declared_changed_files": CHANGED_FILES,
+                            "fix_loops_executed": FIX_LOOP_COUNT,
+                            "exit_code": 0
+                        })
+                    except Exception as err:
+                        LAST_FIX_ERROR = str(err)
+                        FIX_LOOP_HISTORY.append({
+                            "loop": FIX_LOOP_COUNT,
+                            "error": str(err),
+                            "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                        })
+                        add_trace("fix_loop_attempt_failed", {
+                            "loop": FIX_LOOP_COUNT,
+                            "max_loops": MAX_FIX_LOOPS,
+                            "error": str(err)
+                        })
+
+                        if FIX_LOOP_COUNT < MAX_FIX_LOOPS:
+                            RUN_STATUS = "correcting"
+                            try:
+                                handoff_dir = '/tmp/sandbox-repo/context_handoff'
+                                os.makedirs(handoff_dir, exist_ok=True)
+                                with open(os.path.join(handoff_dir, 'last_fix_error.txt'), 'w') as f:
+                                    f.write(f"Loop {FIX_LOOP_COUNT} failed: {err}")
+                            except Exception:
+                                pass
+                        else:
+                            RUN_STATUS = "failed"
+                            add_trace("fix_loops_exhausted", {
+                                "total_attempts": FIX_LOOP_COUNT,
+                                "max_loops": MAX_FIX_LOOPS,
+                                "final_error": str(err)
+                            })
+                            add_trace("phase_failed", {
+                                "phase": CURRENT_DELEGATION.get("phase"),
+                                "exit_code": 1,
+                                "error": str(err)
+                            })
+
+                self.send_json(200, {"accepted": True, "status": RUN_STATUS, "fix_loops_executed": FIX_LOOP_COUNT})
             except Exception as e:
                 self.send_json(400, {"error": str(e)})
 

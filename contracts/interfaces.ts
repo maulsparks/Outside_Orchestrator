@@ -8,6 +8,7 @@ export interface FactoryRequest {
   parent_git_sha: string;
   intent: string;
   user_prompt?: string;
+  max_fix_loops?: number;
   acceptance_criteria: string[];
   policy_version: string;
   agents_md_sha256: string;
@@ -27,6 +28,7 @@ export interface SandboxDelegation {
   task_envelope_hash: string;
   agents_md_sha256: string;
   user_prompt?: string;
+  max_fix_loops?: number;
   allowed_paths: string[];
   immutable_paths: string[];
   acceptance_criteria: string[];

@@ -321,6 +321,7 @@ const server = http.createServer(async (req, res) => {
       const idempotencyKey = rawBody.idempotencyKey || rawBody.idempotency_key || `idem-${crypto.randomUUID()}`;
 
       const userPrompt = rawBody.userPrompt || rawBody.user_prompt || rawBody.prompt;
+      const maxFixLoops = typeof rawBody.maxFixLoops === "number" ? rawBody.maxFixLoops : (typeof rawBody.max_fix_loops === "number" ? rawBody.max_fix_loops : undefined);
       const intent = rawBody.intent || (userPrompt ? userPrompt.trim().split("\n")[0].slice(0, 100) : "execute");
 
       const body: CreateRunRequest = {
@@ -331,6 +332,7 @@ const server = http.createServer(async (req, res) => {
         parentGitSha: rawBody.parentGitSha || rawBody.parent_git_sha,
         intent,
         userPrompt,
+        maxFixLoops,
         acceptanceCriteria: rawBody.acceptanceCriteria || rawBody.acceptance_criteria || (rawBody.envelope?.acceptance_criteria) || ["Valid phase result"],
         policyVersion: rawBody.policyVersion || rawBody.policy_version || "v2.0",
         agentsMdSha256,

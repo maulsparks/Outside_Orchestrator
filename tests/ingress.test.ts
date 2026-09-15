@@ -111,3 +111,21 @@ test("RequestAdmissionEngine derives intent from userPrompt when intent is not p
   assert.equal(result.run.envelope?.user_prompt, promptText);
 });
 
+test("RequestAdmissionEngine sets max_fix_loops defaulting to 3 and preserves custom value", async () => {
+  const repo = new InMemoryIngressRepo();
+  const leaseManager = new LeaseManager(new InMemoryLeaseStorage(), "worker-01");
+  const engine = new RequestAdmissionEngine(repo, leaseManager);
+
+  const reqDefault = makeValidRequest();
+  const resDefault = await engine.admitRequest(reqDefault);
+  assert.equal(resDefault.run.envelope?.max_fix_loops, 3);
+
+  const reqCustom = makeValidRequest({
+    idempotencyKey: "idem-custom-loops",
+    maxFixLoops: 5
+  });
+  const resCustom = await engine.admitRequest(reqCustom);
+  assert.equal(resCustom.run.envelope?.max_fix_loops, 5);
+});
+
+

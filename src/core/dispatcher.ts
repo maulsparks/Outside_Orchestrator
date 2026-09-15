@@ -12,6 +12,7 @@ export interface BuildDelegationOptions {
   taskEnvelopeHash: string;
   agentsMdSha256: string;
   userPrompt?: string;
+  maxFixLoops?: number;
   allowedPaths: string[];
   immutablePaths: string[];
   acceptanceCriteria: string[];
@@ -223,6 +224,7 @@ export class DelegationDispatcher {
       task_envelope_hash: options.taskEnvelopeHash,
       agents_md_sha256: options.agentsMdSha256,
       user_prompt: options.userPrompt,
+      max_fix_loops: options.maxFixLoops ?? 3,
       allowed_paths: options.allowedPaths,
       immutable_paths: options.immutablePaths,
       acceptance_criteria: options.acceptanceCriteria,
