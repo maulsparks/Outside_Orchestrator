@@ -85,7 +85,15 @@ export class ContinuousDeploymentEngine {
     if (scriptExists && process.platform === "linux") {
       try {
         console.log(`[ContinuousDeployment] Executing live deployment script '${this.deployScriptPath}' for trigger '${params.trigger}'...`);
-        const proc = await execFileAsync("bash", [this.deployScriptPath], {
+        
+        let binary = "bash";
+        let args = [this.deployScriptPath];
+        if (fs.existsSync("/usr/bin/systemd-run") && fs.existsSync("/usr/bin/sudo")) {
+          binary = "sudo";
+          args = ["/usr/bin/systemd-run", "--scope", "--quiet", "bash", this.deployScriptPath];
+        }
+
+        const proc = await execFileAsync(binary, args, {
           timeout: 180000,
           env: {
             ...process.env,
