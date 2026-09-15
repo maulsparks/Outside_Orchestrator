@@ -827,16 +827,26 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const body = await parseJsonBody<ArbitrationPolicy>(req);
+      const rawPolicy = await parseJsonBody<any>(req);
+      const policy: ArbitrationPolicy = {
+        strategy: rawPolicy?.strategy,
+        weights: rawPolicy?.weights,
+        requireCleanTerminated: rawPolicy?.requireCleanTerminated ?? rawPolicy?.require_clean_terminated,
+        requireErgPass: rawPolicy?.requireErgPass ?? rawPolicy?.require_erg_pass,
+        requireTestPass: rawPolicy?.requireTestPass ?? rawPolicy?.require_test_pass,
+        requireDeterministicTestPass: rawPolicy?.requireDeterministicTestPass ?? rawPolicy?.require_deterministic_test_pass,
+        minCoveragePct: rawPolicy?.minCoveragePct ?? rawPolicy?.min_coverage_pct,
+        fallbackPolicy: rawPolicy?.fallbackPolicy ?? rawPolicy?.fallback_policy
+      };
       const arms = await tournamentArmStore.listArmsForRun(runId);
-      const evaluations = tournamentArbitrator.evaluateArms(arms, body);
+      const evaluations = tournamentArbitrator.evaluateArms(arms, policy);
       const paretoFrontier = evaluations.filter((e) => e.isParetoOptimal).map((e) => e.arm.arm_id);
       const recommendedWinner = evaluations.find((e) => e.eligible && e.rank === 1)?.arm.arm_id || null;
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
         run_id: runId,
-        strategy: body?.strategy || "lowest_cost",
+        strategy: policy.strategy || "lowest_cost",
         total_arms: arms.length,
         eligible_arms: evaluations.filter((e) => e.eligible).length,
         pareto_frontier: paretoFrontier,
@@ -877,6 +887,10 @@ const server = http.createServer(async (req, res) => {
         cost_cents?: number;
         latency_ms?: number;
         selection_status?: string;
+        deterministic_tests?: Record<string, unknown>;
+        deterministicTests?: Record<string, unknown>;
+        coverage_pct?: number;
+        coveragePct?: number;
         metadata?: Record<string, unknown>;
       }>(req);
 
@@ -884,6 +898,16 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "BadRequest", message: "arm_id is required" }));
         return;
+      }
+
+      const metadata: Record<string, unknown> = {
+        ...(body.metadata || {})
+      };
+      if (body.deterministic_tests || body.deterministicTests) {
+        metadata.deterministic_tests = body.deterministic_tests || body.deterministicTests;
+      }
+      if (typeof body.coverage_pct === "number" || typeof body.coveragePct === "number") {
+        metadata.coverage_pct = body.coverage_pct ?? body.coveragePct;
       }
 
       const arm = await tournamentArmStore.createArm({
@@ -896,7 +920,7 @@ const server = http.createServer(async (req, res) => {
         cost_cents: body.cost_cents,
         latency_ms: body.latency_ms,
         selection_status: (body.selection_status as any) || "unselected",
-        metadata: body.metadata
+        metadata
       });
 
       res.writeHead(201, { "Content-Type": "application/json" });

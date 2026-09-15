@@ -963,6 +963,7 @@ export function getDashboardHtml(): string {
                 <select id="tournStrategySelect" class="form-input" style="padding: 0.35rem 0.65rem; font-size: 0.8rem;" onchange="evaluateTournamentStrategy()">
                   <option value="lowest_cost">Strategy: Lowest Cost</option>
                   <option value="fastest_latency">Strategy: Fastest Latency</option>
+                  <option value="highest_coverage">Strategy: Highest Code Coverage</option>
                   <option value="pareto_optimal" selected>Strategy: Pareto Optimal Frontier</option>
                   <option value="weighted_composite">Strategy: Weighted Composite</option>
                 </select>
@@ -980,6 +981,8 @@ export function getDashboardHtml(): string {
                     <th>Arm ID</th>
                     <th>Model</th>
                     <th>Status</th>
+                    <th>Tests</th>
+                    <th>Coverage</th>
                     <th>Cost</th>
                     <th>Latency</th>
                     <th>Quality</th>
@@ -990,7 +993,7 @@ export function getDashboardHtml(): string {
                   </tr>
                 </thead>
                 <tbody id="tournamentTableBody">
-                  <tr><td colspan="10" style="text-align: center; color: var(--text-dim); padding: 2rem;">Select a run with tournament arms</td></tr>
+                  <tr><td colspan="12" style="text-align: center; color: var(--text-dim); padding: 2rem;">Select a run with tournament arms</td></tr>
                 </tbody>
               </table>
             </div>
@@ -1411,7 +1414,7 @@ export function getDashboardHtml(): string {
         const tbody = document.getElementById("tournamentTableBody");
 
         if (!data.arms || data.arms.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="10" style="text-align: center; color: var(--text-dim); padding: 2rem;">No tournament arms registered for this run</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="12" style="text-align: center; color: var(--text-dim); padding: 2rem;">No tournament arms registered for this run</td></tr>';
           return;
         }
 
@@ -1419,11 +1422,37 @@ export function getDashboardHtml(): string {
           const arm = ev.arm;
           const isWinner = arm.selection_status === "winner";
           const isPareto = ev.isParetoOptimal;
+          const detTests = arm.metadata?.deterministic_tests || arm.metadata?.deterministicTests;
+          const passedCount = detTests ? (detTests.passed_count ?? detTests.passedCount ?? 0) : null;
+          const totalCount = detTests ? (detTests.total_count ?? detTests.totalCount ?? 0) : null;
+          const failedCount = detTests ? (detTests.failed_count ?? detTests.failedCount ?? 0) : null;
+          const coveragePct = typeof ev.metrics?.coveragePct === "number"
+            ? ev.metrics.coveragePct
+            : (typeof arm.metadata?.coverage_pct === "number" ? arm.metadata.coverage_pct : 100);
+
+          let testsHtml = '<span style="color: var(--text-dim); font-size: 0.75rem;">--</span>';
+          if (detTests) {
+            if (detTests.exit_code === 0 && failedCount === 0) {
+              testsHtml = \`<span class="pareto-tag" style="background: rgba(16, 185, 129, 0.12); color: var(--emerald); border-color: rgba(16, 185, 129, 0.3);">✔ \${passedCount}/\${totalCount}</span>\`;
+            } else {
+              testsHtml = \`<span class="pareto-tag" style="background: rgba(244, 63, 94, 0.15); color: var(--rose); border-color: rgba(244, 63, 94, 0.3);">✖ \${failedCount} fail</span>\`;
+            }
+          } else if (arm.metadata?.tests_passed === true) {
+            testsHtml = '<span style="color: var(--emerald); font-weight: 600;">✔ pass</span>';
+          } else if (arm.metadata?.tests_passed === false) {
+            testsHtml = '<span style="color: var(--rose); font-weight: 600;">✖ fail</span>';
+          }
+
+          const covColor = coveragePct >= 80 ? 'var(--emerald)' : (coveragePct >= 50 ? 'var(--amber)' : 'var(--rose)');
+          const covHtml = \`<span style="font-family: var(--font-mono); font-weight: 600; color: \${covColor};">\${coveragePct.toFixed(1)}%</span>\`;
+
           return \`
             <tr>
               <td style="font-family: var(--font-mono); font-weight: 600;">\${arm.arm_id}</td>
               <td style="color: var(--text-muted);">\${arm.model_id || 'default'}</td>
               <td><span class="phase-badge phase-\${arm.status}">\${arm.status}</span></td>
+              <td>\${testsHtml}</td>
+              <td>\${covHtml}</td>
               <td style="font-family: var(--font-mono);">\${arm.cost_cents}¢</td>
               <td style="font-family: var(--font-mono);">\${arm.latency_ms}ms</td>
               <td>\${ev.metrics?.qualityScore || 95}%</td>

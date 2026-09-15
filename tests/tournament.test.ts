@@ -492,3 +492,209 @@ test("HTTP REST API: Tournament arms inspection and winner selection flow", asyn
     server.close();
   }
 });
+
+test("TournamentArbitrator: Disqualifies arm from Pareto frontier when deterministic test gate fails", async () => {
+  const store = new InMemoryTournamentArmStore();
+  const arbitrator = new TournamentArbitrator(store);
+
+  const armPass = await store.createArm({
+    run_id: "run-det-tourn-1",
+    tenant_id: "tenant-1",
+    arm_id: "arm-pass",
+    status: "completed",
+    cost_cents: 35,
+    latency_ms: 2200,
+    metadata: {
+      clean_terminated: true,
+      erg_passed: true,
+      deterministic_tests: {
+        passed_count: 24,
+        failed_count: 0,
+        total_count: 24,
+        coverage_pct: 91.5,
+        exit_code: 0,
+        duration_ms: 1200,
+        stdout_sha256: "0".repeat(64),
+        command: "npm test"
+      }
+    }
+  });
+
+  const armFail = await store.createArm({
+    run_id: "run-det-tourn-1",
+    tenant_id: "tenant-1",
+    arm_id: "arm-fail",
+    status: "completed",
+    cost_cents: 10, // Cheaper and faster, but test failed
+    latency_ms: 1100,
+    metadata: {
+      clean_terminated: true,
+      erg_passed: true,
+      deterministic_tests: {
+        passed_count: 20,
+        failed_count: 4,
+        total_count: 24,
+        coverage_pct: 70.0,
+        exit_code: 1,
+        duration_ms: 900,
+        stdout_sha256: "1".repeat(64),
+        command: "npm test"
+      }
+    }
+  });
+
+  const evaluations = arbitrator.evaluateArms([armPass, armFail]);
+
+  const evalPass = evaluations.find((e) => e.arm.arm_id === "arm-pass");
+  const evalFail = evaluations.find((e) => e.arm.arm_id === "arm-fail");
+
+  assert.ok(evalPass);
+  assert.ok(evalFail);
+
+  // arm-pass is eligible and Pareto optimal
+  assert.equal(evalPass.eligible, true);
+  assert.equal(evalPass.isParetoOptimal, true);
+  assert.equal(evalPass.rank, 1);
+  assert.equal(evalPass.metrics.coveragePct, 91.5);
+  assert.equal(evalPass.metrics.testPassRate, 1.0);
+
+  // arm-fail must be strictly disqualified despite lower cost
+  assert.equal(evalFail.eligible, false);
+  assert.equal(evalFail.isParetoOptimal, false);
+  assert.ok(evalFail.reasons.some((r) => r.includes("failed deterministic code test gate (exit code: 1, 4 failures)")));
+});
+
+test("TournamentArbitrator: Enforces minimum coverage threshold (minCoveragePct)", async () => {
+  const store = new InMemoryTournamentArmStore();
+  const arbitrator = new TournamentArbitrator(store);
+
+  const armLowCov = await store.createArm({
+    run_id: "run-cov-test",
+    tenant_id: "tenant-1",
+    arm_id: "arm-low-cov",
+    status: "completed",
+    cost_cents: 20,
+    latency_ms: 1500,
+    metadata: {
+      clean_terminated: true,
+      erg_passed: true,
+      deterministic_tests: {
+        passed_count: 10,
+        failed_count: 0,
+        total_count: 10,
+        coverage_pct: 72.0,
+        exit_code: 0,
+        duration_ms: 500
+      }
+    }
+  });
+
+  const armHighCov = await store.createArm({
+    run_id: "run-cov-test",
+    tenant_id: "tenant-1",
+    arm_id: "arm-high-cov",
+    status: "completed",
+    cost_cents: 28,
+    latency_ms: 1800,
+    metadata: {
+      clean_terminated: true,
+      erg_passed: true,
+      deterministic_tests: {
+        passed_count: 10,
+        failed_count: 0,
+        total_count: 10,
+        coverage_pct: 88.5,
+        exit_code: 0,
+        duration_ms: 600
+      }
+    }
+  });
+
+  // Evaluate with minCoveragePct: 80.0
+  const evaluations = arbitrator.evaluateArms([armLowCov, armHighCov], {
+    minCoveragePct: 80.0
+  });
+
+  const evalLow = evaluations.find((e) => e.arm.arm_id === "arm-low-cov");
+  const evalHigh = evaluations.find((e) => e.arm.arm_id === "arm-high-cov");
+
+  assert.ok(evalLow);
+  assert.ok(evalHigh);
+
+  assert.equal(evalLow.eligible, false);
+  assert.ok(evalLow.reasons.some((r) => r.includes("below required threshold 80%")));
+
+  assert.equal(evalHigh.eligible, true);
+  assert.equal(evalHigh.rank, 1);
+});
+
+test("TournamentArbitrator: Computes 6D Pareto dominance and ranks by highest_coverage strategy", async () => {
+  const store = new InMemoryTournamentArmStore();
+  const arbitrator = new TournamentArbitrator(store);
+
+  const armCheaper = await store.createArm({
+    run_id: "run-strat-test",
+    tenant_id: "tenant-1",
+    arm_id: "arm-cheaper",
+    status: "completed",
+    cost_cents: 15,
+    latency_ms: 1200,
+    metadata: {
+      clean_terminated: true,
+      erg_passed: true,
+      deterministic_tests: {
+        passed_count: 10,
+        failed_count: 0,
+        total_count: 10,
+        coverage_pct: 82.0,
+        exit_code: 0,
+        duration_ms: 400
+      }
+    }
+  });
+
+  const armDenser = await store.createArm({
+    run_id: "run-strat-test",
+    tenant_id: "tenant-1",
+    arm_id: "arm-denser",
+    status: "completed",
+    cost_cents: 25,
+    latency_ms: 1800,
+    metadata: {
+      clean_terminated: true,
+      erg_passed: true,
+      deterministic_tests: {
+        passed_count: 10,
+        failed_count: 0,
+        total_count: 10,
+        coverage_pct: 98.4,
+        exit_code: 0,
+        duration_ms: 450
+      }
+    }
+  });
+
+  // 1. Both arms are Pareto optimal (neither dominates across all 6 dimensions)
+  const evalsPareto = arbitrator.evaluateArms([armCheaper, armDenser], {
+    strategy: "pareto_optimal"
+  });
+  assert.equal(evalsPareto[0].isParetoOptimal, true);
+  assert.equal(evalsPareto[1].isParetoOptimal, true);
+
+  // 2. Under highest_coverage strategy, arm-denser is ranked #1
+  const evalsCoverage = arbitrator.evaluateArms([armCheaper, armDenser], {
+    strategy: "highest_coverage"
+  });
+  assert.equal(evalsCoverage[0].arm.arm_id, "arm-denser");
+  assert.equal(evalsCoverage[0].rank, 1);
+  assert.equal(evalsCoverage[1].arm.arm_id, "arm-cheaper");
+  assert.equal(evalsCoverage[1].rank, 2);
+
+  // 3. Under lowest_cost strategy, arm-cheaper is ranked #1
+  const evalsCost = arbitrator.evaluateArms([armCheaper, armDenser], {
+    strategy: "lowest_cost"
+  });
+  assert.equal(evalsCost[0].arm.arm_id, "arm-cheaper");
+  assert.equal(evalsCost[0].rank, 1);
+});
+

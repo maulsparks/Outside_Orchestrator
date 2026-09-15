@@ -164,11 +164,23 @@ export class InMemoryTournamentArmStore implements TournamentArmStore {
   }
 }
 
+export interface DeterministicTestReport {
+  passedCount: number;
+  failedCount: number;
+  totalCount: number;
+  coveragePct?: number; // 0.0 to 100.0
+  exitCode: number;
+  durationMs: number;
+  stdoutSha256?: string;
+  command?: string;
+}
+
 export interface ArbitrationWeights {
-  cost?: number;    // Default 0.4
-  latency?: number; // Default 0.3
-  quality?: number; // Default 0.2 (test pass rate / score)
-  churn?: number;   // Default 0.1 (number of declared touched files)
+  cost?: number;     // Default 0.3
+  latency?: number;  // Default 0.2
+  quality?: number;  // Default 0.2 (test pass rate / score)
+  churn?: number;    // Default 0.1 (number of declared touched files)
+  coverage?: number; // Default 0.2 (code coverage percentage)
 }
 
 export type FallbackTrigger =
@@ -185,11 +197,19 @@ export interface ModelFallbackPolicy {
 }
 
 export interface ArbitrationPolicy {
-  strategy?: "lowest_cost" | "fastest_latency" | "pareto_optimal" | "weighted_composite" | "manual";
+  strategy?:
+    | "lowest_cost"
+    | "fastest_latency"
+    | "pareto_optimal"
+    | "weighted_composite"
+    | "highest_coverage"
+    | "manual";
   weights?: ArbitrationWeights;
   requireCleanTerminated?: boolean;
   requireErgPass?: boolean;
   requireTestPass?: boolean;
+  requireDeterministicTestPass?: boolean; // Default true: strictly marks arm ineligible if exitCode !== 0 or failedCount > 0
+  minCoveragePct?: number;                // Optional threshold (e.g. 80.0%)
   fallbackPolicy?: ModelFallbackPolicy;
 }
 
@@ -198,6 +218,10 @@ export interface ArmEvaluationMetrics {
   latencyMs: number;
   qualityScore: number;
   churnFiles: number;
+  testPassRate: number;      // 0.0 to 1.0
+  coveragePct: number;       // 0.0 to 100.0
+  testDurationMs: number;
+  deterministicTests?: DeterministicTestReport;
 }
 
 export interface ArmEvaluationResult {
@@ -327,9 +351,55 @@ export class TournamentArbitrator {
         reasons.push("Arm failed frozen acceptance test suite");
       }
 
+      // Extract deterministic test report if present
+      const rawDet = (arm.metadata?.deterministic_tests ?? arm.metadata?.deterministicTests) as Record<string, unknown> | undefined;
+      let deterministicTests: DeterministicTestReport | undefined = undefined;
+      if (rawDet) {
+        deterministicTests = {
+          passedCount: Number(rawDet.passed_count ?? rawDet.passedCount ?? 0),
+          failedCount: Number(rawDet.failed_count ?? rawDet.failedCount ?? 0),
+          totalCount: Number(rawDet.total_count ?? rawDet.totalCount ?? 0),
+          coveragePct: typeof rawDet.coverage_pct === "number"
+            ? (rawDet.coverage_pct as number)
+            : (typeof rawDet.coveragePct === "number" ? (rawDet.coveragePct as number) : undefined),
+          exitCode: Number(rawDet.exit_code ?? rawDet.exitCode ?? 0),
+          durationMs: Number(rawDet.duration_ms ?? rawDet.durationMs ?? 0),
+          stdoutSha256: (rawDet.stdout_sha256 ?? rawDet.stdoutSha256) as string | undefined,
+          command: (rawDet.command) as string | undefined
+        };
+      }
+
+      // Strict Deterministic Test Gate check: disqualifies broken arms from Pareto frontier
+      const requireDet = policy?.requireDeterministicTestPass ?? true;
+      if (requireDet && deterministicTests) {
+        if (deterministicTests.exitCode !== 0 || deterministicTests.failedCount > 0) {
+          eligible = false;
+          reasons.push(
+            `Arm failed deterministic code test gate (exit code: ${deterministicTests.exitCode}, ${deterministicTests.failedCount} failures)`
+          );
+        }
+      }
+
+      const coveragePct = typeof deterministicTests?.coveragePct === "number"
+        ? deterministicTests.coveragePct
+        : (typeof arm.metadata?.coverage_pct === "number" ? Number(arm.metadata.coverage_pct) : 100);
+
+      // Threshold minimum coverage check
+      const minCoverage = policy?.minCoveragePct;
+      if (typeof minCoverage === "number" && coveragePct < minCoverage) {
+        eligible = false;
+        reasons.push(`Arm coverage ${coveragePct}% is below required threshold ${minCoverage}%`);
+      }
+
+      const testPassRate = deterministicTests
+        ? (deterministicTests.totalCount > 0 ? deterministicTests.passedCount / deterministicTests.totalCount : (deterministicTests.exitCode === 0 ? 1.0 : 0.0))
+        : (arm.metadata?.tests_passed !== false ? 1.0 : 0.0);
+
+      const testDurationMs = deterministicTests?.durationMs ?? 0;
+
       const qualityScore = typeof arm.metadata?.quality_score === "number"
         ? (arm.metadata.quality_score as number)
-        : (arm.metadata?.tests_passed !== false ? 100 : 0);
+        : Math.round(testPassRate * 100);
 
       const churnFiles = Array.isArray(arm.metadata?.declared_changed_files)
         ? (arm.metadata.declared_changed_files as unknown[]).length
@@ -339,7 +409,11 @@ export class TournamentArbitrator {
         costCents: arm.cost_cents,
         latencyMs: arm.latency_ms,
         qualityScore,
-        churnFiles
+        churnFiles,
+        testPassRate,
+        coveragePct,
+        testDurationMs,
+        deterministicTests
       };
 
       return {
@@ -357,25 +431,29 @@ export class TournamentArbitrator {
 
     const eligibleArms = rawEvals.filter((e) => e.eligible);
 
-    // 2. Compute Pareto Dominance among eligible arms
+    // 2. Compute 6-Dimensional Pareto Dominance among eligible arms
     for (let i = 0; i < eligibleArms.length; i++) {
       for (let j = 0; j < eligibleArms.length; j++) {
         if (i === j) continue;
         const A = eligibleArms[i];
         const B = eligibleArms[j];
 
-        // A dominates B if A is no worse in all 4 metrics and strictly better in at least one
+        // A dominates B if A is no worse across all 6 metrics and strictly better in at least one
         const noWorse =
           A.metrics.costCents <= B.metrics.costCents &&
           A.metrics.latencyMs <= B.metrics.latencyMs &&
           A.metrics.qualityScore >= B.metrics.qualityScore &&
-          A.metrics.churnFiles <= B.metrics.churnFiles;
+          A.metrics.churnFiles <= B.metrics.churnFiles &&
+          A.metrics.coveragePct >= B.metrics.coveragePct &&
+          A.metrics.testDurationMs <= B.metrics.testDurationMs;
 
         const strictlyBetter =
           A.metrics.costCents < B.metrics.costCents ||
           A.metrics.latencyMs < B.metrics.latencyMs ||
           A.metrics.qualityScore > B.metrics.qualityScore ||
-          A.metrics.churnFiles < B.metrics.churnFiles;
+          A.metrics.churnFiles < B.metrics.churnFiles ||
+          A.metrics.coveragePct > B.metrics.coveragePct ||
+          A.metrics.testDurationMs < B.metrics.testDurationMs;
 
         if (noWorse && strictlyBetter) {
           B.dominatedBy.push(A.arm.arm_id);
@@ -387,7 +465,7 @@ export class TournamentArbitrator {
       item.isParetoOptimal = item.dominatedBy.length === 0;
     }
 
-    // 3. Compute Min-Max Normalized Utility Scores
+    // 3. Compute Min-Max Normalized Utility Scores including Coverage
     if (eligibleArms.length > 0) {
       const minCost = Math.min(...eligibleArms.map((e) => e.metrics.costCents));
       const maxCost = Math.max(...eligibleArms.map((e) => e.metrics.costCents));
@@ -397,21 +475,25 @@ export class TournamentArbitrator {
       const maxQual = Math.max(...eligibleArms.map((e) => e.metrics.qualityScore));
       const minChurn = Math.min(...eligibleArms.map((e) => e.metrics.churnFiles));
       const maxChurn = Math.max(...eligibleArms.map((e) => e.metrics.churnFiles));
+      const minCov = Math.min(...eligibleArms.map((e) => e.metrics.coveragePct));
+      const maxCov = Math.max(...eligibleArms.map((e) => e.metrics.coveragePct));
 
-      const wCost = policy?.weights?.cost ?? 0.4;
-      const wLat = policy?.weights?.latency ?? 0.3;
+      const wCost = policy?.weights?.cost ?? 0.3;
+      const wLat = policy?.weights?.latency ?? 0.2;
       const wQual = policy?.weights?.quality ?? 0.2;
       const wChurn = policy?.weights?.churn ?? 0.1;
-      const totalWeight = wCost + wLat + wQual + wChurn || 1.0;
+      const wCov = policy?.weights?.coverage ?? 0.2;
+      const totalWeight = wCost + wLat + wQual + wChurn + wCov || 1.0;
 
       for (const item of eligibleArms) {
         const normCost = maxCost > minCost ? (maxCost - item.metrics.costCents) / (maxCost - minCost) : 1.0;
         const normLat = maxLat > minLat ? (maxLat - item.metrics.latencyMs) / (maxLat - minLat) : 1.0;
         const normQual = maxQual > minQual ? (item.metrics.qualityScore - minQual) / (maxQual - minQual) : 1.0;
         const normChurn = maxChurn > minChurn ? (maxChurn - item.metrics.churnFiles) / (maxChurn - minChurn) : 1.0;
+        const normCov = maxCov > minCov ? (item.metrics.coveragePct - minCov) / (maxCov - minCov) : 1.0;
 
         item.utilityScore = Math.round(
-          ((wCost * normCost + wLat * normLat + wQual * normQual + wChurn * normChurn) / totalWeight) * 1000
+          ((wCost * normCost + wLat * normLat + wQual * normQual + wChurn * normChurn + wCov * normCov) / totalWeight) * 1000
         ) / 1000;
       }
     }
@@ -422,6 +504,9 @@ export class TournamentArbitrator {
         item.score = item.metrics.costCents * 10000 + item.metrics.latencyMs;
       } else if (strat === "fastest_latency") {
         item.score = item.metrics.latencyMs * 10000 + item.metrics.costCents;
+      } else if (strat === "highest_coverage") {
+        // Highest coverage ranks first, ties broken by lowest cost and latency
+        item.score = -(item.metrics.coveragePct * 100000 - item.metrics.costCents * 10 - item.metrics.latencyMs / 1000);
       } else if (strat === "pareto_optimal") {
         // Pareto optimal arms get score bonus (higher utility ranks first)
         const paretoBonus = item.isParetoOptimal ? 10 : 0;
@@ -509,6 +594,8 @@ export class TournamentArbitrator {
           model_id: winner.model_id,
           cost_cents: winner.cost_cents,
           latency_ms: winner.latency_ms,
+          deterministic_tests: winner.metadata?.deterministic_tests ?? winner.metadata?.deterministicTests,
+          coverage_pct: (winner.metadata?.deterministic_tests as any)?.coverage_pct ?? (winner.metadata?.deterministicTests as any)?.coveragePct ?? winner.metadata?.coverage_pct,
           rationale: params.rationale,
           other_arm_count: others.length
         }
