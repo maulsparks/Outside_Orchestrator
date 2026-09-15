@@ -14,6 +14,7 @@ import { authorizeHarvest, prepareHarvestProposal, commitHarvestRef, signHarvest
 import { LiveDispatcher, LiveDispatchConfig } from "./core/liveDispatcher.js";
 import { SupabasePhaseEnvelopeStore } from "./core/dispatcher.js";
 import { MultiPhaseSequencer, MultiPhaseSequenceConfig } from "./core/multiPhaseSequencer.js";
+import { LiveSandboxRunner } from "./core/liveRunner.js";
 import {
   InferenceBroker,
   ModelNotAllowedError,
@@ -46,6 +47,7 @@ let evidenceLedger: EvidenceLedger | null = null;
 let phaseEnvelopeStore: SupabasePhaseEnvelopeStore | null = null;
 let liveDispatcher: LiveDispatcher | null = null;
 let multiPhaseSequencer: MultiPhaseSequencer | null = null;
+let liveRunner: LiveSandboxRunner | null = null;
 let inferenceBroker: InferenceBroker | null = null;
 let recoveryEngine: RecoveryEngine | null = null;
 let tournamentArmStore: TournamentArmStore | null = null;
@@ -104,6 +106,14 @@ try {
       );
 
       multiPhaseSequencer = new MultiPhaseSequencer(
+        liveDispatcher,
+        stateMachine,
+        runsRepo,
+        evidenceLedger,
+        phaseEnvelopeStore
+      );
+
+      liveRunner = new LiveSandboxRunner(
         liveDispatcher,
         stateMachine,
         runsRepo,
@@ -472,6 +482,90 @@ const server = http.createServer(async (req, res) => {
       }
 
       const result = await liveDispatcher.executeRun(dispatchConfig);
+      res.writeHead(result.status === "completed" ? 200 : 500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 3b. Live End-to-End Sandbox Execution (POST /runs/live-e2e or POST /v1/runs/live-e2e)
+  const liveE2eMatch = pathname.match(/^\/(?:v1\/)?runs\/live-e2e$/);
+  if (liveE2eMatch && req.method === "POST") {
+    if (!liveRunner || !runsRepo) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "LiveRunnerUnavailable", message: "Live sandbox runner is not initialized" }));
+      return;
+    }
+
+    try {
+      const body = await parseJsonBody<{
+        run_id?: string;
+        runId?: string;
+        tenant_id?: string;
+        tenantId?: string;
+        prompt?: string;
+        user_prompt?: string;
+        repository_id?: string;
+        repositoryId?: string;
+        parent_git_sha?: string;
+        parentGitSha?: string;
+        allowed_paths?: string[];
+        allowedPaths?: string[];
+        immutable_paths?: string[];
+        target_branch?: string;
+        targetBranch?: string;
+        execution_kind?: "agent" | "code";
+        executionKind?: "agent" | "code";
+        deterministic_command?: string;
+        deterministicCommand?: string;
+        ttl_seconds?: number;
+        ttlSeconds?: number;
+        budget_cents?: number;
+        budgetCents?: number;
+        auto_harvest?: boolean;
+        autoHarvest?: boolean;
+        async?: boolean;
+      }>(req);
+
+      const runId = body.runId || body.run_id || crypto.randomUUID();
+      const prompt = body.prompt || body.user_prompt;
+      const executionKind = body.executionKind || body.execution_kind || "code";
+      const deterministicCommand = body.deterministicCommand || body.deterministic_command;
+      const allowedPaths = body.allowedPaths || body.allowed_paths || ["output/**"];
+      const targetBranch = body.targetBranch || body.target_branch || "main";
+      const autoHarvest = body.autoHarvest !== undefined ? body.autoHarvest : (body.auto_harvest !== false);
+      const ttlSeconds = body.ttlSeconds || body.ttl_seconds || 300;
+
+      const runOptions = {
+        runId,
+        tenantId: body.tenantId || body.tenant_id,
+        userPrompt: prompt,
+        parentGitSha: body.parentGitSha || body.parent_git_sha,
+        allowedPaths,
+        immutablePaths: body.immutable_paths,
+        targetBranch,
+        executionKind,
+        deterministicCommand,
+        ttlSeconds,
+        budgetCents: body.budgetCents || body.budget_cents,
+        autoHarvest,
+        repositoryId: body.repositoryId || body.repository_id
+      };
+
+      if (body.async) {
+        liveRunner.executeLiveRun(runOptions).catch((err) => {
+          console.error(`[LiveSandboxRunner] Background live-e2e run '${runId}' failed:`, err);
+        });
+        res.writeHead(202, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "dispatching", runId }));
+        return;
+      }
+
+      const result = await liveRunner.executeLiveRun(runOptions);
       res.writeHead(result.status === "completed" ? 200 : 500, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));
     } catch (err: unknown) {

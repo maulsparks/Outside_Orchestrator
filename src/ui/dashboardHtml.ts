@@ -1141,7 +1141,8 @@ export function getDashboardHtml(): string {
       </div>
       <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 0.75rem;">
         <button class="btn" onclick="closeNewRunModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="submitNewRun()">Dispatch Run</button>
+        <button class="btn" onclick="submitNewRun()">Admit & Dispatch</button>
+        <button class="btn btn-emerald" onclick="submitLiveE2eRun()">🚀 Live Sandbox & Auto-PR</button>
       </div>
     </div>
   </div>
@@ -1755,6 +1756,46 @@ export function getDashboardHtml(): string {
         }
       } catch (err) {
         alert("Error creating run: " + err.message);
+      }
+    }
+
+    async function submitLiveE2eRun() {
+      const tenantId = document.getElementById("inputTenantId").value;
+      const parentSha = document.getElementById("inputParentSha").value;
+      const userPrompt = document.getElementById("inputUserPrompt") ? document.getElementById("inputUserPrompt").value.trim() : "";
+      const executionKind = document.getElementById("inputExecutionKind") ? document.getElementById("inputExecutionKind").value : "code";
+      const deterministicCommand = executionKind === "code" && document.getElementById("inputDeterministicCommand")
+        ? (document.getElementById("inputDeterministicCommand").value.trim() || "echo 'Live sandbox run complete' > output/phase_result.json")
+        : undefined;
+
+      try {
+        const res = await fetch("/v1/runs/live-e2e", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tenant_id: tenantId,
+            parent_git_sha: parentSha,
+            user_prompt: userPrompt || undefined,
+            execution_kind: executionKind,
+            deterministic_command: deterministicCommand,
+            auto_harvest: true,
+            async: true
+          })
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+          closeNewRunModal();
+          const newId = data.runId;
+          await fetchRuns();
+          if (newId) {
+            selectRun(newId);
+          }
+        } else {
+          alert("Failed to launch live E2E run: " + (data.message || data.error));
+        }
+      } catch (err) {
+        alert("Error launching live E2E run: " + err.message);
       }
     }
 

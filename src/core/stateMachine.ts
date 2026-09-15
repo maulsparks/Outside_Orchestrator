@@ -69,6 +69,7 @@ export interface RunStateStore {
     event?: { eventType: string; payload: Record<string, unknown>; sequence: number }
   ): Promise<boolean>;
   updateBudget?(runId: string, budget: Record<string, unknown>): Promise<void> | void;
+  createRun?(run: FactoryRunRecord): Promise<void> | void;
   listInFlightRuns?(): Promise<FactoryRunRecord[]>;
   listRuns?(limit?: number): Promise<FactoryRunRecord[]>;
 }
@@ -79,6 +80,10 @@ export class InMemoryRunStateStore implements RunStateStore {
 
   setRun(run: FactoryRunRecord): void {
     this.runs.set(run.id, { ...run });
+  }
+
+  createRun(run: FactoryRunRecord): void {
+    this.setRun(run);
   }
 
   async getRun(runId: string): Promise<FactoryRunRecord | null> {
