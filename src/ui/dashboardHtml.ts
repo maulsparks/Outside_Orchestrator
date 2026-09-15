@@ -687,6 +687,8 @@ export function getDashboardHtml(): string {
       z-index: 100;
       align-items: center;
       justify-content: center;
+      padding: 1.5rem 1rem;
+      overflow-y: auto;
     }
 
     .modal-overlay.open {
@@ -698,17 +700,61 @@ export function getDashboardHtml(): string {
       border: 1px solid rgba(255, 255, 255, 0.12);
       border-radius: 12px;
       width: 90%;
-      max-width: 540px;
-      padding: 1.75rem;
+      max-width: 660px;
+      max-height: 88vh;
+      overflow-y: auto;
+      padding: 1.5rem 1.75rem;
       box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
       display: flex;
       flex-direction: column;
-      gap: 1.25rem;
+      gap: 1.15rem;
+      position: relative;
+    }
+
+    .modal::-webkit-scrollbar {
+      width: 7px;
+    }
+    .modal::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.6);
+      border-radius: 4px;
+    }
+    .modal::-webkit-scrollbar-thumb {
+      background: rgba(56, 189, 248, 0.35);
+      border-radius: 4px;
+    }
+    .modal::-webkit-scrollbar-thumb:hover {
+      background: rgba(56, 189, 248, 0.7);
+    }
+
+    .modal-header {
+      position: sticky;
+      top: -1.5rem;
+      background: #0f172a;
+      z-index: 20;
+      margin: -1.5rem -1.75rem 0 -1.75rem;
+      padding: 1.25rem 1.75rem 0.85rem 1.75rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
     }
 
     .modal-title {
       font-size: 1.1rem;
       font-weight: 700;
+    }
+
+    .modal-actions {
+      position: sticky;
+      bottom: -1.5rem;
+      background: #0f172a;
+      z-index: 20;
+      margin: 0.5rem -1.75rem -1.5rem -1.75rem;
+      padding: 1rem 1.75rem 1.25rem 1.75rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.75rem;
     }
 
     .form-group {
@@ -1091,9 +1137,12 @@ export function getDashboardHtml(): string {
   </main>
 
   <!-- New Run Modal -->
-  <div id="newRunModal" class="modal-overlay">
+  <div id="newRunModal" class="modal-overlay" onclick="if(event.target===this)closeNewRunModal()">
     <div class="modal">
-      <div class="modal-title">Dispatch New Factory Run</div>
+      <div class="modal-header">
+        <div class="modal-title">Dispatch New Factory Run</div>
+        <button type="button" class="btn" onclick="closeNewRunModal()" style="padding: 0.2rem 0.5rem; font-size: 0.8rem; background: transparent; border: 1px solid rgba(255,255,255,0.15); color: var(--text-muted); cursor: pointer;" title="Close">✕</button>
+      </div>
       <div class="form-group">
         <label class="form-label">Tenant ID</label>
         <input type="text" id="inputTenantId" class="form-input" value="tenant-production">
@@ -1193,7 +1242,7 @@ export function getDashboardHtml(): string {
           <span style="color: #fff;">Immediately dispatch execution to Tier 2 sandbox VM</span>
         </label>
       </div>
-      <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 0.75rem;">
+      <div class="modal-actions">
         <button class="btn" onclick="closeNewRunModal()">Cancel</button>
         <button class="btn" onclick="submitNewRun()">Admit & Dispatch</button>
         <button class="btn btn-emerald" onclick="submitLiveE2eRun()">🚀 Live Sandbox & Auto-PR</button>
