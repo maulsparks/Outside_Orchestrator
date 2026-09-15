@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
 TARGET_DIR="${TARGET_DIR:-/opt/outside-orchestrator}"
 SERVICE_NAME="${SERVICE_NAME:-outside-orchestrator}"
 HEALTH_PORT="${HEALTH_PORT:-3000}"
