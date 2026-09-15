@@ -68,8 +68,21 @@ const server = http.createServer((req, res) => {
           phase: currentDelegation.phase,
           attempt: currentDelegation.attempt,
           parent_sha: currentDelegation.parent_sha,
-          allowed_paths: currentDelegation.allowed_paths
+          allowed_paths: currentDelegation.allowed_paths,
+          user_prompt: currentDelegation.user_prompt || null
         });
+
+        // Materialize human user prompt into sandbox working tree
+        if (currentDelegation.user_prompt) {
+          try {
+            fs.writeFileSync('/tmp/sandbox-repo/user_prompt.md', currentDelegation.user_prompt);
+            const handoffDir = '/tmp/sandbox-repo/context_handoff';
+            fs.mkdirSync(handoffDir, { recursive: true });
+            fs.writeFileSync(path.join(handoffDir, 'user_prompt.md'), currentDelegation.user_prompt);
+          } catch (pErr) {
+            // Ignore non-fatal handoff write error
+          }
+        }
 
         // Execute delegated phase work
         const targetPath = (currentDelegation.allowed_paths && currentDelegation.allowed_paths[0])
@@ -83,6 +96,7 @@ const server = http.createServer((req, res) => {
           fs.writeFileSync(artifactFile, JSON.stringify({
             status: "success",
             phase: currentDelegation.phase,
+            user_prompt: currentDelegation.user_prompt || null,
             timestamp: new Date().toISOString()
           }, null, 2));
           changedFiles = [path.join(targetPath, 'phase_result.json').replace(/\\\\/g, '/')];

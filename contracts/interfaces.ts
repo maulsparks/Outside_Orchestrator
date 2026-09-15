@@ -7,6 +7,7 @@ export interface FactoryRequest {
   repository_id: string;
   parent_git_sha: string;
   intent: string;
+  user_prompt?: string;
   acceptance_criteria: string[];
   policy_version: string;
   agents_md_sha256: string;
@@ -25,6 +26,7 @@ export interface SandboxDelegation {
   parent_git_sha: string;
   task_envelope_hash: string;
   agents_md_sha256: string;
+  user_prompt?: string;
   allowed_paths: string[];
   immutable_paths: string[];
   acceptance_criteria: string[];

@@ -73,3 +73,32 @@ test("DelegationDispatcher produces reproducible envelopeHash for same inputs", 
   assert.equal(res1.envelope.network_policy, "isolated");
   assert.equal(res2.envelope.network_policy, "isolated");
 });
+
+test("DelegationDispatcher includes user_prompt in envelope and factors into envelopeHash", async () => {
+  const dispatcher = new DelegationDispatcher();
+  const run = makeRun();
+
+  const options = {
+    run,
+    phase: "build" as const,
+    phaseAttempt: 1,
+    taskEnvelopeHash: "a".repeat(64),
+    agentsMdSha256: "b".repeat(64),
+    allowedPaths: ["src/**"],
+    immutablePaths: ["AGENTS.md"],
+    acceptanceCriteria: ["AC 1"],
+    commandPolicyId: "policy-standard",
+    runtimeCredentialReference: "cred-ref-001",
+    ttlSeconds: 3600
+  };
+
+  const resWithoutPrompt = await dispatcher.buildAndDispatchEnvelope(options);
+  const resWithPrompt = await dispatcher.buildAndDispatchEnvelope({
+    ...options,
+    userPrompt: "Implement SSSF 4-line user prompt feature"
+  });
+
+  assert.equal(resWithPrompt.envelope.user_prompt, "Implement SSSF 4-line user prompt feature");
+  assert.notEqual(resWithoutPrompt.envelopeHash, resWithPrompt.envelopeHash);
+});
+

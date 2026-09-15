@@ -11,6 +11,7 @@ export interface BuildDelegationOptions {
   phaseAttempt?: number;
   taskEnvelopeHash: string;
   agentsMdSha256: string;
+  userPrompt?: string;
   allowedPaths: string[];
   immutablePaths: string[];
   acceptanceCriteria: string[];
@@ -221,6 +222,7 @@ export class DelegationDispatcher {
       parent_git_sha: options.run.parent_git_sha,
       task_envelope_hash: options.taskEnvelopeHash,
       agents_md_sha256: options.agentsMdSha256,
+      user_prompt: options.userPrompt,
       allowed_paths: options.allowedPaths,
       immutable_paths: options.immutablePaths,
       acceptance_criteria: options.acceptanceCriteria,

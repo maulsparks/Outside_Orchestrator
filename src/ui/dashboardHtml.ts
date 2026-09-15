@@ -899,6 +899,20 @@ export function getDashboardHtml(): string {
             </div>
           </div>
 
+          <!-- Human User Prompt Card -->
+          <div id="humanPromptCard" style="background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.25rem; margin-top: 1rem; margin-bottom: 1rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+              <span style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; color: var(--cyan);">Human User Prompt & Task Specification</span>
+              <span id="promptIntentBadge" style="font-size: 0.7rem; background: rgba(255,255,255,0.06); padding: 0.2rem 0.5rem; border-radius: 4px; color: var(--text-dim); font-family: var(--font-mono);">intent: --</span>
+            </div>
+            <div id="metaUserPrompt" style="font-family: var(--font-mono); font-size: 0.85rem; color: #fff; white-space: pre-wrap; background: rgba(0,0,0,0.25); padding: 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); max-height: 140px; overflow-y: auto;">
+              --
+            </div>
+            <div style="display: flex; gap: 1rem; margin-top: 0.6rem; font-size: 0.75rem; color: var(--text-muted);">
+              <div><strong style="color: var(--text-dim);">Acceptance Criteria:</strong> <span id="metaAcceptance">--</span></div>
+            </div>
+          </div>
+
           <!-- Run Metadata Grid -->
           <div class="meta-grid">
             <div class="meta-item">
@@ -1077,6 +1091,18 @@ export function getDashboardHtml(): string {
         <input type="text" id="inputTenantId" class="form-input" value="tenant-production">
       </div>
       <div class="form-group">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+          <label class="form-label" style="margin-bottom: 0;">Human User Prompt & Instructions</label>
+          <div style="display: flex; gap: 0.35rem;">
+            <button type="button" class="btn" style="padding: 0.15rem 0.4rem; font-size: 0.7rem;" onclick="applyPromptTemplate('four_line')">4-Line SSSF</button>
+            <button type="button" class="btn" style="padding: 0.15rem 0.4rem; font-size: 0.7rem;" onclick="applyPromptTemplate('feature')">Feature</button>
+            <button type="button" class="btn" style="padding: 0.15rem 0.4rem; font-size: 0.7rem;" onclick="applyPromptTemplate('bugfix')">Bug Fix</button>
+            <button type="button" class="btn" style="padding: 0.15rem 0.4rem; font-size: 0.7rem;" onclick="applyPromptTemplate('scout')">Scout</button>
+          </div>
+        </div>
+        <textarea id="inputUserPrompt" class="form-input" rows="4" style="font-family: var(--font-mono); font-size: 0.8rem; resize: vertical;" placeholder="Enter task instructions (e.g. Add a GET /api/tags endpoint...)"></textarea>
+      </div>
+      <div class="form-group">
         <label class="form-label">Parent Git SHA</label>
         <input type="text" id="inputParentSha" class="form-input" value="cb48638000000000000000000000000000000000">
       </div>
@@ -1229,25 +1255,34 @@ export function getDashboardHtml(): string {
     function renderRunsList() {
       const container = document.getElementById("runsList");
       const search = document.getElementById("runSearchInput").value.toLowerCase();
-      const filtered = allRuns.filter(r => r.id.toLowerCase().includes(search) || r.tenant_id.toLowerCase().includes(search));
+      const filtered = allRuns.filter(r => 
+        r.id.toLowerCase().includes(search) || 
+        r.tenant_id.toLowerCase().includes(search) ||
+        (r.envelope?.user_prompt && r.envelope.user_prompt.toLowerCase().includes(search)) ||
+        (r.envelope?.intent && r.envelope.intent.toLowerCase().includes(search))
+      );
 
       if (filtered.length === 0) {
         container.innerHTML = '<div style="padding: 2rem; text-align: center; color: var(--text-dim);">No runs found</div>';
         return;
       }
 
-      container.innerHTML = filtered.map(r => \`
+      container.innerHTML = filtered.map(r => {
+        const promptSnippet = (r.envelope?.user_prompt || (r.envelope?.intent !== 'execute' ? r.envelope?.intent : '') || '').split('\\n')[0].slice(0, 36);
+        return \`
         <div class="run-item \${r.id === selectedRunId ? 'active' : ''}" onclick="selectRun('\${r.id}')">
           <div class="run-header-line">
             <span class="run-id">\${r.id.slice(0, 13)}...</span>
             <span class="phase-badge phase-\${r.phase}">\${r.phase}</span>
           </div>
-          <div class="run-subline">
+          \${promptSnippet ? \`<div style="font-size: 0.72rem; color: var(--cyan); margin-top: 0.25rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono);">\${promptSnippet}</div>\` : ''}
+          <div class="run-subline" style="margin-top: 0.25rem;">
             <span>\${r.tenant_id}</span>
             <span>v\${r.state_version}</span>
           </div>
         </div>
-      \`).join("");
+        \`;
+      }).join("");
     }
 
     function filterRuns() {
@@ -1266,6 +1301,13 @@ export function getDashboardHtml(): string {
 
       // Update Progression Stepper
       updateStepper(run.phase);
+
+      // Update Human User Prompt Card
+      const promptText = run.envelope?.user_prompt || (run.envelope?.intent !== "execute" ? run.envelope?.intent : null) || "(No human prompt specified; default execution intent)";
+      document.getElementById("metaUserPrompt").textContent = promptText;
+      document.getElementById("promptIntentBadge").textContent = \`intent: \${run.envelope?.intent || "execute"}\`;
+      const crit = run.envelope?.acceptance_criteria;
+      document.getElementById("metaAcceptance").textContent = Array.isArray(crit) ? crit.join("; ") : (crit || "Valid phase result");
 
       // Update Metadata Deck
       document.getElementById("metaRunId").textContent = run.id;
@@ -1554,10 +1596,25 @@ export function getDashboardHtml(): string {
       document.getElementById("newRunModal").classList.remove("open");
     }
 
+    function applyPromptTemplate(type) {
+      const ta = document.getElementById("inputUserPrompt");
+      if (!ta) return;
+      if (type === 'four_line') {
+        ta.value = "Add a GET /api/tags endpoint returning {tags: [{tag, count}]}\\nWhere: src/server.ts, tests/server.test.ts\\nDone means: GET /api/tags returns counts, and tests pass\\nOut of scope: tag editing UI, tag filtering";
+      } else if (type === 'feature') {
+        ta.value = "Implement feature: <Describe capability>\\nWhere: src/\\nDone means: End-to-end functionality working and covered by tests\\nOut of scope: Complex frontend styling";
+      } else if (type === 'bugfix') {
+        ta.value = "Fix bug: <Describe symptom and reproduction steps>\\nWhere: src/\\nDone means: Bug resolved without regression in existing test suite\\nOut of scope: Unrelated refactoring";
+      } else if (type === 'scout') {
+        ta.value = "Scout & inspect codebase for <target architecture / symbol>\\nWhere: src/, contracts/\\nDone means: Structured report with findings and line references\\nOut of scope: Any file mutations (read-only recon)";
+      }
+    }
+
     async function submitNewRun() {
       const tenantId = document.getElementById("inputTenantId").value;
       const parentSha = document.getElementById("inputParentSha").value;
       const maxCost = parseInt(document.getElementById("inputMaxCost").value, 10) || 1000;
+      const userPrompt = document.getElementById("inputUserPrompt") ? document.getElementById("inputUserPrompt").value.trim() : "";
       const autoDispatch = document.getElementById("inputAutoDispatch") ? document.getElementById("inputAutoDispatch").checked : true;
 
       try {
@@ -1567,6 +1624,7 @@ export function getDashboardHtml(): string {
           body: JSON.stringify({
             tenant_id: tenantId,
             parent_git_sha: parentSha,
+            user_prompt: userPrompt || undefined,
             idempotency_key: "idem-" + Date.now() + "-" + Math.random().toString(36).substring(2, 9),
             budget: { max_cost_cents: maxCost }
           })

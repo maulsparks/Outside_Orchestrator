@@ -243,15 +243,19 @@ export class LiveDispatcher {
         ? String((run.envelope as Record<string, unknown>).agents_md_sha256)
         : (config.agentsMdSha256 ?? "0".repeat(64));
 
+      const userPrompt = (run.envelope as Record<string, unknown>)?.user_prompt as string | undefined;
+      const runAcceptance = ((run.envelope as Record<string, unknown>)?.acceptance_criteria as string[]) ?? ["Phase outputs valid results within allowed paths"];
+
       const dispatchOptions: BuildDelegationOptions = {
         run: { ...run, state_version: stateVersion },
         phase,
         phaseAttempt: attempt,
         taskEnvelopeHash: "sha256-default-task-envelope",
         agentsMdSha256: resolvedAgentsMdSha256,
+        userPrompt,
         allowedPaths,
         immutablePaths: config.immutablePaths ?? ["AGENTS.md"],
-        acceptanceCriteria: ["Phase outputs valid results within allowed paths"],
+        acceptanceCriteria: runAcceptance,
         commandPolicyId: "default-policy-v1",
         runtimeCredentialReference: "jwt-claim-scoped",
         ttlSeconds: config.ttlSeconds ?? 600

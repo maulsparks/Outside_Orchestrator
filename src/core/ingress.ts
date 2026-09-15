@@ -11,6 +11,7 @@ export interface CreateRunRequest {
   repositoryId: string;
   parentGitSha: string;
   intent: string;
+  userPrompt?: string;
   acceptanceCriteria: string[];
   policyVersion: string;
   agentsMdSha256?: string;
@@ -70,6 +71,9 @@ export class RequestAdmissionEngine {
       agentsMdContent: req.agentsMdContent
     });
 
+    const userPrompt = req.userPrompt;
+    const intent = req.intent || (userPrompt ? userPrompt.trim().split("\n")[0].slice(0, 100) : "execute");
+
     // 2. Validate request shape according to intake contract
     validateRequestShape({
       request_id: requestId,
@@ -77,7 +81,8 @@ export class RequestAdmissionEngine {
       tenant_id: req.tenantId,
       repository_id: req.repositoryId,
       parent_git_sha: req.parentGitSha,
-      intent: req.intent,
+      intent,
+      user_prompt: userPrompt,
       acceptance_criteria: req.acceptanceCriteria,
       policy_version: req.policyVersion,
       agents_md_sha256: agentsMdSha256,
@@ -106,7 +111,8 @@ export class RequestAdmissionEngine {
       state_version: 1,
       budget: { max_cost_cents: req.budgetCents },
       envelope: {
-        intent: req.intent,
+        intent,
+        user_prompt: userPrompt,
         acceptance_criteria: req.acceptanceCriteria,
         repository_id: req.repositoryId,
         agents_md_sha256: agentsMdSha256

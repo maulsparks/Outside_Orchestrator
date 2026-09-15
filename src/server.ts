@@ -320,13 +320,17 @@ const server = http.createServer(async (req, res) => {
       const requestId = rawBody.requestId || rawBody.request_id || `req-${crypto.randomUUID()}`;
       const idempotencyKey = rawBody.idempotencyKey || rawBody.idempotency_key || `idem-${crypto.randomUUID()}`;
 
+      const userPrompt = rawBody.userPrompt || rawBody.user_prompt || rawBody.prompt;
+      const intent = rawBody.intent || (userPrompt ? userPrompt.trim().split("\n")[0].slice(0, 100) : "execute");
+
       const body: CreateRunRequest = {
         requestId,
         idempotencyKey,
         tenantId: rawBody.tenantId || rawBody.tenant_id,
         repositoryId: rawBody.repositoryId || rawBody.repository_id || "repo-default",
         parentGitSha: rawBody.parentGitSha || rawBody.parent_git_sha,
-        intent: rawBody.intent || "execute",
+        intent,
+        userPrompt,
         acceptanceCriteria: rawBody.acceptanceCriteria || rawBody.acceptance_criteria || (rawBody.envelope?.acceptance_criteria) || ["Valid phase result"],
         policyVersion: rawBody.policyVersion || rawBody.policy_version || "v2.0",
         agentsMdSha256,

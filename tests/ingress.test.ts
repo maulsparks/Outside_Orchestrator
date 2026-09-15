@@ -84,3 +84,30 @@ test("RequestAdmissionEngine rejects malformed request", async () => {
   const badReq = makeValidRequest({ parentGitSha: "short-sha" }); // invalid SHA
   await assert.rejects(async () => engine.admitRequest(badReq), { message: /invalid parent_git_sha/ });
 });
+
+test("RequestAdmissionEngine preserves userPrompt in run envelope", async () => {
+  const repo = new InMemoryIngressRepo();
+  const leaseManager = new LeaseManager(new InMemoryLeaseStorage(), "worker-01");
+  const engine = new RequestAdmissionEngine(repo, leaseManager);
+
+  const promptText = "Add a GET /api/tags endpoint\nWhere: src/server.ts\nDone means: tests pass\nOut of scope: UI";
+  const req = makeValidRequest({ userPrompt: promptText, intent: "Explicit feature intent" });
+  const result = await engine.admitRequest(req);
+
+  assert.equal(result.run.envelope?.user_prompt, promptText);
+  assert.equal(result.run.envelope?.intent, "Explicit feature intent");
+});
+
+test("RequestAdmissionEngine derives intent from userPrompt when intent is not provided", async () => {
+  const repo = new InMemoryIngressRepo();
+  const leaseManager = new LeaseManager(new InMemoryLeaseStorage(), "worker-01");
+  const engine = new RequestAdmissionEngine(repo, leaseManager);
+
+  const promptText = "Fix race condition in lease renewal timer";
+  const req = makeValidRequest({ intent: undefined, userPrompt: promptText });
+  const result = await engine.admitRequest(req);
+
+  assert.equal(result.run.envelope?.intent, "Fix race condition in lease renewal timer");
+  assert.equal(result.run.envelope?.user_prompt, promptText);
+});
+
