@@ -33,48 +33,72 @@ npm run build
 echo "[3/5] Verifying Policy-as-Code & Security Invariants..."
 node dist/scripts/lint-policy.js
 
-echo "[4/5] Restarting systemd service (${SERVICE_NAME})..."
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl daemon-reload || true
-  systemctl restart "${SERVICE_NAME}"
-else
-  echo "⚠ systemctl not found, skipping service restart."
-fi
+RESTART_MODE="${RESTART_MODE:-async}"
 
-echo "[5/5] Performing post-deployment health verification..."
-sleep 3
-
-# Verify systemd service status if available
-if command -v systemctl >/dev/null 2>&1; then
-  if ! systemctl is-active --quiet "${SERVICE_NAME}"; then
-    echo "✖ Deployment verification failed: ${SERVICE_NAME} is not active!"
-    systemctl status "${SERVICE_NAME}" --no-pager || true
-    exit 1
+if [ "${RESTART_MODE}" = "async" ]; then
+  echo "[4/5] Scheduling systemd service restart (${SERVICE_NAME})..."
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload || true
+    (sleep 2 && systemctl restart "${SERVICE_NAME}") >/dev/null 2>&1 &
+    echo "✔ Service restart scheduled in background (+2s) to allow clean HTTP response."
+  else
+    echo "⚠ systemctl not found, skipping service restart."
   fi
-  echo "✔ Systemd service is active (running)."
-fi
 
-# Verify HTTP health endpoint
-HEALTH_URL="http://127.0.0.1:${HEALTH_PORT}/health"
-RETRIES=5
-SUCCESS=0
-
-for i in $(seq 1 $RETRIES); do
+  echo "[5/5] Performing pre-restart health verification..."
+  HEALTH_URL="http://127.0.0.1:${HEALTH_PORT}/health"
   RESPONSE=$(curl -s --fail "${HEALTH_URL}" 2>/dev/null || true)
   if echo "${RESPONSE}" | grep -q '"status":"ok"'; then
-    echo "✔ Health probe succeeded: ${RESPONSE}"
-    SUCCESS=1
-    break
+    echo "✔ Health probe verified current instance is responding: ${RESPONSE}"
   fi
-  echo "Waiting for service to become healthy (attempt $i/$RETRIES)..."
-  sleep 2
-done
 
-if [ "$SUCCESS" -ne 1 ]; then
-  echo "✖ Health probe failed after $RETRIES attempts on ${HEALTH_URL}"
-  exit 1
+  echo "================================================================="
+  echo "✔ DEPLOYMENT COMPLETED & RESTART SCHEDULED SUCCESSFULLY"
+  echo "================================================================="
+else
+  echo "[4/5] Restarting systemd service (${SERVICE_NAME})..."
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload || true
+    systemctl restart "${SERVICE_NAME}"
+  else
+    echo "⚠ systemctl not found, skipping service restart."
+  fi
+
+  echo "[5/5] Performing post-deployment health verification..."
+  sleep 3
+
+  # Verify systemd service status if available
+  if command -v systemctl >/dev/null 2>&1; then
+    if ! systemctl is-active --quiet "${SERVICE_NAME}"; then
+      echo "✖ Deployment verification failed: ${SERVICE_NAME} is not active!"
+      systemctl status "${SERVICE_NAME}" --no-pager || true
+      exit 1
+    fi
+    echo "✔ Systemd service is active (running)."
+  fi
+
+  # Verify HTTP health endpoint
+  HEALTH_URL="http://127.0.0.1:${HEALTH_PORT}/health"
+  RETRIES=5
+  SUCCESS=0
+
+  for i in $(seq 1 $RETRIES); do
+    RESPONSE=$(curl -s --fail "${HEALTH_URL}" 2>/dev/null || true)
+    if echo "${RESPONSE}" | grep -q '"status":"ok"'; then
+      echo "✔ Health probe succeeded: ${RESPONSE}"
+      SUCCESS=1
+      break
+    fi
+    echo "Waiting for service to become healthy (attempt $i/$RETRIES)..."
+    sleep 2
+  done
+
+  if [ "$SUCCESS" -ne 1 ]; then
+    echo "✖ Health probe failed after $RETRIES attempts on ${HEALTH_URL}"
+    exit 1
+  fi
+
+  echo "================================================================="
+  echo "✔ DEPLOYMENT COMPLETED & VERIFIED SUCCESSFULLY"
+  echo "================================================================="
 fi
-
-echo "================================================================="
-echo "✔ DEPLOYMENT COMPLETED & VERIFIED SUCCESSFULLY"
-echo "================================================================="

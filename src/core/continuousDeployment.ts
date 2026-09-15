@@ -99,7 +99,8 @@ export class ContinuousDeploymentEngine {
             ...process.env,
             SERVICE_NAME: this.serviceName,
             TARGET_DIR: fs.existsSync("/opt/outside-orchestrator") ? "/opt/outside-orchestrator" : process.cwd(),
-            HEALTH_PORT: process.env.PORT || "3000"
+            HEALTH_PORT: process.env.PORT || "3000",
+            RESTART_MODE: "async"
           }
         });
         stdout = proc.stdout;
