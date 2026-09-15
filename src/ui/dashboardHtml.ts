@@ -1825,7 +1825,10 @@ export function getDashboardHtml(): string {
       btn.disabled = true;
 
       try {
-        const res = await fetch("/v1/tasks/decompose", {
+        const url = (window.location.protocol === "file:" || !window.location.host)
+          ? "http://100.81.98.73:3000/v1/tasks/decompose"
+          : "/v1/tasks/decompose";
+        const res = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ prompt })
@@ -1861,6 +1864,7 @@ export function getDashboardHtml(): string {
           alert("Task decomposition failed: " + (plan.message || plan.error));
         }
       } catch (err) {
+        console.error("Task decomposition fetch error:", err);
         alert("Error calling decomposer: " + err.message);
       } finally {
         btn.innerHTML = origText;
