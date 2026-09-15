@@ -31,10 +31,15 @@ npm run build
 echo "[3/5] Verifying Policy-as-Code & Security Invariants..."
 node dist/scripts/lint-policy.js
 
+SUDO_CMD=""
+if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+  SUDO_CMD="sudo"
+fi
+
 echo "[4/5] Restarting systemd service (${SERVICE_NAME})..."
 if command -v systemctl >/dev/null 2>&1; then
-  systemctl daemon-reload || true
-  systemctl restart "${SERVICE_NAME}"
+  ${SUDO_CMD} systemctl daemon-reload || true
+  ${SUDO_CMD} systemctl restart "${SERVICE_NAME}"
 else
   echo "⚠ systemctl not found, skipping service restart."
 fi
@@ -44,9 +49,9 @@ sleep 3
 
 # Verify systemd service status if available
 if command -v systemctl >/dev/null 2>&1; then
-  if ! systemctl is-active --quiet "${SERVICE_NAME}"; then
+  if ! ${SUDO_CMD} systemctl is-active --quiet "${SERVICE_NAME}"; then
     echo "✖ Deployment verification failed: ${SERVICE_NAME} is not active!"
-    systemctl status "${SERVICE_NAME}" --no-pager || true
+    ${SUDO_CMD} systemctl status "${SERVICE_NAME}" --no-pager || true
     exit 1
   fi
   echo "✔ Systemd service is active (running)."
