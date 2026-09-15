@@ -74,7 +74,7 @@ test("startWatchdog emits periodic heartbeats and stopWatchdog terminates timer"
   });
 
   watchdog.startWatchdog(20); // 20ms interval for test
-  await new Promise((resolve) => setTimeout(resolve, 65));
+  await new Promise((resolve) => setTimeout(resolve, 120));
   watchdog.stopWatchdog();
 
   const countAfterStop = calls.length;

@@ -179,7 +179,10 @@ try {
       githubPublisher: githubPrPublisher,
       deploymentEngine,
       runStore: runsRepo,
-      evidenceLedger: evidenceLedger ?? undefined
+      evidenceLedger: evidenceLedger ?? undefined,
+      taskDecomposer,
+      admissionEngine: admissionEngine ?? undefined,
+      liveRunner: liveRunner ?? undefined
     });
   }
 } catch (err) {
