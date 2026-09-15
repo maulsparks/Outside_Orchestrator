@@ -41,6 +41,9 @@ test("Operator Dashboard HTML: getDashboardHtml returns valid HTML with all requ
   assert.ok(html.includes("Multi-Criteria Pareto Tournament Arms"), "Tournament deck present");
   assert.ok(html.includes("1-Click Ed25519 Harvest Gate & Authorization"), "Harvest approval deck present");
   assert.ok(html.includes("Run Throughput by Phase"), "SVG charts present");
+  assert.ok(html.includes("function resetNewRunModal()"), "resetNewRunModal function declared");
+  assert.ok(html.includes("resetNewRunModal();"), "closeNewRunModal invokes resetNewRunModal");
+  assert.ok(html.includes("onclick=\"closeNewRunModal()\">Cancel"), "Cancel button triggers closeNewRunModal");
 });
 
 test("HTTP Server: Serves Dashboard on /dashboard, /ui, and HTML /", async () => {

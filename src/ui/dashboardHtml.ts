@@ -2458,6 +2458,70 @@ export function getDashboardHtml(): string {
 
     function closeNewRunModal() {
       document.getElementById("newRunModal").classList.remove("open");
+      resetNewRunModal();
+    }
+
+    function resetNewRunModal() {
+      const tenantInput = document.getElementById("inputTenantId");
+      if (tenantInput) tenantInput.value = "tenant-production";
+
+      const promptInput = document.getElementById("inputUserPrompt");
+      if (promptInput) promptInput.value = "";
+
+      const decompStudio = document.getElementById("decompositionStudio");
+      if (decompStudio) decompStudio.style.display = "none";
+
+      const decompIntent = document.getElementById("badgeDecomposeIntent");
+      if (decompIntent) decompIntent.innerText = "CODE";
+
+      const decompConf = document.getElementById("badgeDecomposeConfidence");
+      if (decompConf) decompConf.innerText = "Confidence: 95%";
+
+      const decompTitle = document.getElementById("decomposedTitle");
+      if (decompTitle) decompTitle.innerText = "Task Plan";
+
+      const decompReasoning = document.getElementById("decomposedReasoning");
+      if (decompReasoning) decompReasoning.innerText = "";
+
+      currentAllowedPaths = ["src/**", "tests/**", "output/**"];
+      const newAllowedPathInput = document.getElementById("inputNewAllowedPath");
+      if (newAllowedPathInput) newAllowedPathInput.value = "";
+
+      currentAcceptanceCriteria = [
+        "Passes automated test suite: npm test",
+        "Zero undeclared file touches in Effect Reconciliation Gate (ERG)"
+      ];
+      const newCriterionInput = document.getElementById("inputNewCriterion");
+      if (newCriterionInput) newCriterionInput.value = "";
+
+      const execKind = document.getElementById("inputExecutionKind");
+      if (execKind) execKind.value = "code";
+
+      toggleDetCmdInput();
+
+      const detCmdInput = document.getElementById("inputDeterministicCommand");
+      if (detCmdInput) detCmdInput.value = "npm test";
+
+      const parentSha = document.getElementById("inputParentSha");
+      if (parentSha) parentSha.value = "cb48638000000000000000000000000000000000";
+
+      const maxCost = document.getElementById("inputMaxCost");
+      if (maxCost) maxCost.value = "500";
+
+      const maxFixLoops = document.getElementById("inputMaxFixLoops");
+      if (maxFixLoops) maxFixLoops.value = "3";
+
+      const autoDispatch = document.getElementById("inputAutoDispatch");
+      if (autoDispatch) autoDispatch.checked = true;
+
+      const btnDecompose = document.getElementById("btnDecomposePrompt");
+      if (btnDecompose) {
+        btnDecompose.innerHTML = "<span>🪄 Auto-Decompose Task</span>";
+        btnDecompose.disabled = false;
+      }
+
+      renderAllowedPathsChips();
+      renderCriteriaList();
     }
 
     async function autoDecomposePrompt() {
