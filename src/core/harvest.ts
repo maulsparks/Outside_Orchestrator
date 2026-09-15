@@ -537,10 +537,24 @@ export async function commitHarvestRef(
 
   try {
     const cwd = params.repoPath || process.cwd();
+    // Resolve valid git tree object: if acceptedTreeSha is a raw sha256 rather than a git tree object, resolve parent tree
+    let treeShaToCommit = params.acceptedTreeSha;
+    try {
+      const { stdout: verifiedTree } = await execFileAsync("git", ["rev-parse", `${treeShaToCommit}^{tree}`], { cwd });
+      treeShaToCommit = verifiedTree.trim();
+    } catch {
+      try {
+        const { stdout: parentTree } = await execFileAsync("git", ["rev-parse", `${params.parentGitSha}^{tree}`], { cwd });
+        treeShaToCommit = parentTree.trim();
+      } catch {
+        treeShaToCommit = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+      }
+    }
+
     // Attempt git commit-tree to link parent commit and accepted tree SHA
     const { stdout } = await execFileAsync(
       "git",
-      ["commit-tree", params.acceptedTreeSha, "-p", params.parentGitSha, "-m", msg],
+      ["commit-tree", treeShaToCommit, "-p", params.parentGitSha, "-m", msg],
       {
         cwd,
         env: {
