@@ -27,3 +27,4 @@ export * from "./adapters/tailscale/client.js";
 export * from "./core/nodeVerifier.js";
 export * from "./core/liveRunner.js";
 export * from "./adapters/github/prPublisher.js";
+export * from "./core/taskDecomposer.js";

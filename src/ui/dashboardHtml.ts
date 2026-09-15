@@ -1108,16 +1108,70 @@ export function getDashboardHtml(): string {
             <button type="button" class="btn" style="padding: 0.15rem 0.4rem; font-size: 0.7rem;" onclick="applyPromptTemplate('scout')">Scout</button>
           </div>
         </div>
-        <textarea id="inputUserPrompt" class="form-input" rows="4" style="font-family: var(--font-mono); font-size: 0.8rem; resize: vertical;" placeholder="Enter task instructions (e.g. Add a GET /api/tags endpoint...)"></textarea>
+        <textarea id="inputUserPrompt" class="form-input" rows="4" style="font-family: var(--font-mono); font-size: 0.8rem; resize: vertical;" placeholder="Enter task instructions (e.g. Add JWT authentication in src/auth, add unit tests in tests/auth.test.ts...)"></textarea>
+        <div style="display: flex; justify-content: flex-end; margin-top: 0.35rem;">
+          <button type="button" id="btnDecomposePrompt" class="btn btn-primary" onclick="autoDecomposePrompt()" style="display: flex; align-items: center; gap: 0.4rem; padding: 0.35rem 0.85rem; font-size: 0.75rem; font-weight: 600;">
+            <span>🪄 Auto-Decompose Task</span>
+          </button>
+        </div>
       </div>
+
+      <!-- Task Decomposition Studio (Least-Privilege Boundary & Acceptance Gates) -->
+      <div id="decompositionStudio" style="display: none; background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 8px; padding: 0.85rem; margin-bottom: 0.85rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <span id="badgeDecomposeIntent" class="badge" style="background: rgba(56, 189, 248, 0.2); color: var(--cyan); font-weight: 700; font-size: 0.7rem;">CODE</span>
+            <span id="badgeDecomposeConfidence" style="font-size: 0.75rem; color: var(--text-muted);">Confidence: 95%</span>
+          </div>
+          <span id="decomposedTitle" style="font-size: 0.75rem; color: #cbd5e1; font-weight: 600; max-width: 250px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Task Plan</span>
+        </div>
+        <div id="decomposedReasoning" style="font-size: 0.72rem; color: #94a3b8; margin-bottom: 0.6rem; line-height: 1.35;"></div>
+
+        <!-- Allowed Paths Chips Editor -->
+        <div style="margin-bottom: 0.6rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+            <span style="font-size: 0.75rem; font-weight: 600; color: #e2e8f0;">Allowed Paths (Zero-Tolerance ERG Boundary)</span>
+            <span style="font-size: 0.68rem; color: var(--text-muted);">Least-privilege touch perimeter</span>
+          </div>
+          <div id="allowedPathsChips" style="display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.35rem; min-height: 28px; padding: 4px; background: rgba(0, 0, 0, 0.25); border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.05);"></div>
+          <div style="display: flex; gap: 0.4rem;">
+            <input type="text" id="inputNewAllowedPath" class="form-input" style="font-size: 0.72rem; padding: 0.2rem 0.4rem; height: 26px;" placeholder="Add custom path glob (e.g. src/utils/**)" onkeydown="if(event.key==='Enter'){event.preventDefault();addAllowedPathFromInput();}">
+            <button type="button" class="btn" style="padding: 0.2rem 0.5rem; font-size: 0.72rem; height: 26px;" onclick="addAllowedPathFromInput()">+ Add</button>
+          </div>
+        </div>
+
+        <!-- Immutable Paths -->
+        <div style="margin-bottom: 0.6rem;">
+          <div style="font-size: 0.72rem; font-weight: 600; color: #94a3b8; margin-bottom: 0.25rem;">Immutable / Protected Paths</div>
+          <div style="display: flex; flex-wrap: wrap; gap: 0.35rem;">
+            <span class="badge" style="background: rgba(239, 68, 68, 0.15); color: #f87171; font-size: 0.68rem;">🔒 AGENTS.md</span>
+            <span class="badge" style="background: rgba(239, 68, 68, 0.15); color: #f87171; font-size: 0.68rem;">🔒 .github/**</span>
+            <span class="badge" style="background: rgba(239, 68, 68, 0.15); color: #f87171; font-size: 0.68rem;">🔒 package.json</span>
+          </div>
+        </div>
+
+        <!-- Frozen Acceptance Criteria -->
+        <div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+            <span style="font-size: 0.75rem; font-weight: 600; color: #e2e8f0;">Frozen Acceptance Criteria</span>
+            <span style="font-size: 0.68rem; color: var(--text-muted);">Verifiable harvest gates</span>
+          </div>
+          <div id="criteriaList" style="display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.35rem;"></div>
+          <div style="display: flex; gap: 0.4rem;">
+            <input type="text" id="inputNewCriterion" class="form-input" style="font-size: 0.72rem; padding: 0.2rem 0.4rem; height: 26px;" placeholder="Add verifiable criterion..." onkeydown="if(event.key==='Enter'){event.preventDefault();addCriterionFromInput();}">
+            <button type="button" class="btn" style="padding: 0.2rem 0.5rem; font-size: 0.72rem; height: 26px;" onclick="addCriterionFromInput()">+ Add</button>
+          </div>
+        </div>
+      </div>
+
       <div class="form-group">
         <label class="form-label">Execution Kind</label>
         <select id="inputExecutionKind" class="form-input" onchange="toggleDetCmdInput()">
-          <option value="agent" selected>Agent Driven (AI Inference & Model Synthesis)</option>
-          <option value="code">Code Gate (Deterministic Subprocess — $0.00)</option>
+          <option value="code" selected>Code Gate (Deterministic Subprocess — $0.00)</option>
+          <option value="agent">Agent Driven (AI Inference & Model Synthesis)</option>
         </select>
       </div>
-      <div class="form-group" id="groupDeterministicCommand" style="display: none;">
+      <div class="form-group" id="groupDeterministicCommand">
         <label class="form-label">Deterministic Command (SSSF Subprocess Pattern)</label>
         <input type="text" id="inputDeterministicCommand" class="form-input" value="npm test" placeholder="e.g. npm test, bun test, pytest">
       </div>
@@ -1127,7 +1181,7 @@ export function getDashboardHtml(): string {
       </div>
       <div class="form-group">
         <label class="form-label">Max Cost Budget (cents)</label>
-        <input type="number" id="inputMaxCost" class="form-input" value="1000">
+        <input type="number" id="inputMaxCost" class="form-input" value="500">
       </div>
       <div class="form-group">
         <label class="form-label">Max Fix Loops (Bounded Correction)</label>
@@ -1743,12 +1797,132 @@ export function getDashboardHtml(): string {
       \`;
     }
 
+    let currentAllowedPaths = ["src/**", "tests/**", "output/**"];
+    let currentAcceptanceCriteria = [
+      "Passes automated test suite: npm test",
+      "Zero undeclared file touches in Effect Reconciliation Gate (ERG)"
+    ];
+
     function openNewRunModal() {
       document.getElementById("newRunModal").classList.add("open");
+      renderAllowedPathsChips();
+      renderCriteriaList();
     }
 
     function closeNewRunModal() {
       document.getElementById("newRunModal").classList.remove("open");
+    }
+
+    async function autoDecomposePrompt() {
+      const prompt = document.getElementById("inputUserPrompt") ? document.getElementById("inputUserPrompt").value.trim() : "";
+      if (!prompt) {
+        alert("Please enter task instructions in the prompt field first");
+        return;
+      }
+      const btn = document.getElementById("btnDecomposePrompt");
+      const origText = btn.innerHTML;
+      btn.innerHTML = "<span>⏳ Decomposing...</span>";
+      btn.disabled = true;
+
+      try {
+        const res = await fetch("/v1/tasks/decompose", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt })
+        });
+        const plan = await res.json();
+        if (res.ok) {
+          currentAllowedPaths = plan.allowed_paths || ["src/**", "tests/**", "output/**"];
+          currentAcceptanceCriteria = plan.acceptance_criteria || [];
+
+          document.getElementById("badgeDecomposeIntent").innerText = (plan.intent || "code").toUpperCase();
+          document.getElementById("badgeDecomposeConfidence").innerText = "Confidence: " + Math.round((plan.confidence || 0.85) * 100) + "%";
+          document.getElementById("decomposedTitle").innerText = plan.title || "Task Plan";
+          document.getElementById("decomposedReasoning").innerText = plan.reasoning || "";
+
+          if (plan.execution_kind) {
+            const sel = document.getElementById("inputExecutionKind");
+            if (sel) {
+              sel.value = plan.execution_kind;
+              toggleDetCmdInput();
+            }
+          }
+          if (plan.recommended_command && document.getElementById("inputDeterministicCommand")) {
+            document.getElementById("inputDeterministicCommand").value = plan.recommended_command;
+          }
+          if (plan.estimated_budget_cents && document.getElementById("inputMaxCost")) {
+            document.getElementById("inputMaxCost").value = plan.estimated_budget_cents;
+          }
+
+          renderAllowedPathsChips();
+          renderCriteriaList();
+          document.getElementById("decompositionStudio").style.display = "block";
+        } else {
+          alert("Task decomposition failed: " + (plan.message || plan.error));
+        }
+      } catch (err) {
+        alert("Error calling decomposer: " + err.message);
+      } finally {
+        btn.innerHTML = origText;
+        btn.disabled = false;
+      }
+    }
+
+    function renderAllowedPathsChips() {
+      const container = document.getElementById("allowedPathsChips");
+      if (!container) return;
+      container.innerHTML = currentAllowedPaths.map((p, idx) => \`
+        <span style="display: inline-flex; align-items: center; gap: 0.25rem; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 4px; padding: 2px 6px; font-size: 0.7rem; font-family: var(--font-mono);">
+          <span>\${p}</span>
+          <button type="button" onclick="removeAllowedPath(\${idx})" style="background: none; border: none; color: #94a3b8; cursor: pointer; padding: 0 2px; font-size: 0.75rem; line-height: 1;">✕</button>
+        </span>
+      \`).join("");
+    }
+
+    function addAllowedPathFromInput() {
+      const inp = document.getElementById("inputNewAllowedPath");
+      if (!inp) return;
+      const val = inp.value.trim();
+      if (val && !currentAllowedPaths.includes(val)) {
+        currentAllowedPaths.push(val);
+        inp.value = "";
+        renderAllowedPathsChips();
+      }
+    }
+
+    function removeAllowedPath(idx) {
+      currentAllowedPaths.splice(idx, 1);
+      renderAllowedPathsChips();
+    }
+
+    function renderCriteriaList() {
+      const container = document.getElementById("criteriaList");
+      if (!container) return;
+      container.innerHTML = currentAcceptanceCriteria.map((c, idx) => \`
+        <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 4px; padding: 3px 8px; font-size: 0.72rem; color: #e2e8f0;">
+          <span style="display: flex; align-items: center; gap: 0.35rem;">
+            <span style="color: var(--cyan);">✔</span>
+            <span>\${c}</span>
+          </span>
+          <button type="button" onclick="removeCriterion(\${idx})" style="background: none; border: none; color: #64748b; cursor: pointer; font-size: 0.75rem; padding: 0 4px;">✕</button>
+        </div>
+      \`).join("");
+    }
+
+    function addCriterionFromInput() {
+      const inp = document.getElementById("inputNewCriterion");
+      if (!inp) return;
+      const val = inp.value.trim();
+      if (val && !currentAcceptanceCriteria.includes(val)) {
+        currentAcceptanceCriteria.push(val);
+        inp.value = "";
+        renderCriteriaList();
+      }
+    }
+
+    function removeCriterion(idx) {
+      currentAcceptanceCriteria.splice(idx, 1);
+      renderCriteriaList();
     }
 
     function applyPromptTemplate(type) {
@@ -1793,6 +1967,7 @@ export function getDashboardHtml(): string {
             tenant_id: tenantId,
             parent_git_sha: parentSha,
             user_prompt: userPrompt || undefined,
+            acceptance_criteria: currentAcceptanceCriteria,
             max_fix_loops: maxFixLoops,
             execution_kind: executionKind,
             deterministic_command: deterministicCommand,
@@ -1807,8 +1982,8 @@ export function getDashboardHtml(): string {
           const newId = data.run ? data.run.id : (data.id || null);
           if (newId && autoDispatch) {
             const dispatchPayload = executionKind === "code"
-              ? { phase: "test", execution_kind: "code", deterministic_command: deterministicCommand || "npm test", async: true }
-              : { phase: "build", async: true };
+              ? { phase: "test", execution_kind: "code", deterministic_command: deterministicCommand || "npm test", allowed_paths: currentAllowedPaths, async: true }
+              : { phase: "build", allowed_paths: currentAllowedPaths, async: true };
             await fetch(\`/v1/runs/\${newId}/dispatch\`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -1844,6 +2019,8 @@ export function getDashboardHtml(): string {
             user_prompt: userPrompt || undefined,
             execution_kind: executionKind,
             deterministic_command: deterministicCommand,
+            allowed_paths: currentAllowedPaths.length > 0 ? currentAllowedPaths : ["output/**"],
+            acceptance_criteria: currentAcceptanceCriteria,
             auto_harvest: true,
             async: true
           })

@@ -37,6 +37,9 @@ import { TailscalePruner } from "./core/tailscalePruner.js";
 import { ContinuousDeploymentEngine } from "./core/continuousDeployment.js";
 import { PrMergeCoordinator } from "./core/prMergeCoordinator.js";
 import { GitHubPrPublisher } from "./adapters/github/prPublisher.js";
+import { TaskDecomposer } from "./core/taskDecomposer.js";
+
+const taskDecomposer = new TaskDecomposer();
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -428,6 +431,34 @@ const server = http.createServer(async (req, res) => {
       const statusCode = isClientError ? 400 : 500;
       res.writeHead(statusCode, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 2b. Human Task Ingress & Decomposition (POST /tasks/decompose or POST /v1/tasks/decompose)
+  if ((pathname === "/tasks/decompose" || pathname === "/v1/tasks/decompose") && req.method === "POST") {
+    try {
+      const body = await parseJsonBody<any>(req);
+      const prompt = body.prompt || body.user_prompt || body.userPrompt;
+      if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "InvalidPrompt", message: "Prompt cannot be empty" }));
+        return;
+      }
+
+      const plan = taskDecomposer.decompose({
+        prompt,
+        repositoryContext: body.repositoryContext || body.repository_context,
+        targetBranch: body.targetBranch || body.target_branch,
+        existingFiles: body.existingFiles || body.existing_files
+      });
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(plan));
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "DecompositionError", message: error.message }));
     }
     return;
   }
