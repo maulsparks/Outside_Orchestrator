@@ -19,6 +19,45 @@ export interface PullRequestResult {
   error?: string;
 }
 
+export interface PullRequestDetails {
+  number: number;
+  state: "open" | "closed";
+  merged: boolean;
+  mergeable: boolean | null;
+  mergeableState?: string;
+  title: string;
+  headRef: string;
+  headSha: string;
+  baseRef: string;
+  htmlUrl: string;
+  mergedAt?: string | null;
+  mergeCommitSha?: string | null;
+}
+
+export interface PullRequestReview {
+  id: number;
+  user: string;
+  state: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED" | "PENDING";
+  submittedAt?: string;
+  commitId?: string;
+}
+
+export interface MergePullRequestParams {
+  owner?: string;
+  repo?: string;
+  pullNumber: number;
+  commitTitle?: string;
+  commitMessage?: string;
+  mergeMethod?: "squash" | "merge" | "rebase";
+}
+
+export interface MergePullRequestResult {
+  merged: boolean;
+  sha?: string;
+  message?: string;
+  error?: string;
+}
+
 export interface CreatePullRequestParams {
   runId: string;
   branch: string;
@@ -438,4 +477,141 @@ export class GitHubPrPublisher {
       body: params.bodyMarkdown
     });
   }
+
+  /**
+   * Fetches current Pull Request status and metadata from GitHub.
+   */
+  public async getPullRequest(params: {
+    owner?: string;
+    repo?: string;
+    pullNumber: number;
+  }): Promise<PullRequestDetails | null> {
+    if (!this.hasToken()) {
+      return null;
+    }
+    const owner = params.owner ?? this.defaultRepo.owner;
+    const repo = params.repo ?? this.defaultRepo.repo;
+    try {
+      const res = await this.fetchFn(`${this.apiBaseUrl}/repos/${owner}/${repo}/pulls/${params.pullNumber}`, {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${this.token}`,
+          "Accept": "application/vnd.github+json",
+          "User-Agent": "Outside-Orchestrator-Factory/1.0",
+          "X-GitHub-Api-Version": "2022-11-28"
+        }
+      });
+      if (!res.ok) {
+        return null;
+      }
+      const data = await res.json() as any;
+      return {
+        number: data.number,
+        state: data.state,
+        merged: Boolean(data.merged),
+        mergeable: data.mergeable,
+        mergeableState: data.mergeable_state,
+        title: data.title,
+        headRef: data.head?.ref,
+        headSha: data.head?.sha,
+        baseRef: data.base?.ref,
+        htmlUrl: data.html_url,
+        mergedAt: data.merged_at,
+        mergeCommitSha: data.merge_commit_sha
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Fetches submitted reviews for a Pull Request from GitHub.
+   */
+  public async getPullRequestReviews(params: {
+    owner?: string;
+    repo?: string;
+    pullNumber: number;
+  }): Promise<PullRequestReview[]> {
+    if (!this.hasToken()) {
+      return [];
+    }
+    const owner = params.owner ?? this.defaultRepo.owner;
+    const repo = params.repo ?? this.defaultRepo.repo;
+    try {
+      const res = await this.fetchFn(`${this.apiBaseUrl}/repos/${owner}/${repo}/pulls/${params.pullNumber}/reviews`, {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${this.token}`,
+          "Accept": "application/vnd.github+json",
+          "User-Agent": "Outside-Orchestrator-Factory/1.0",
+          "X-GitHub-Api-Version": "2022-11-28"
+        }
+      });
+      if (!res.ok) {
+        return [];
+      }
+      const list = await res.json() as any[];
+      return list.map((item) => ({
+        id: item.id,
+        user: item.user?.login || "unknown",
+        state: item.state,
+        submittedAt: item.submitted_at,
+        commitId: item.commit_id
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Merges an approved Pull Request via GitHub REST API.
+   */
+  public async mergePullRequest(params: MergePullRequestParams): Promise<MergePullRequestResult> {
+    if (!this.hasToken()) {
+      return { merged: false, error: "No GitHub token configured" };
+    }
+    const owner = params.owner ?? this.defaultRepo.owner;
+    const repo = params.repo ?? this.defaultRepo.repo;
+    const mergeMethod = params.mergeMethod || "squash";
+
+    try {
+      const res = await this.fetchFn(`${this.apiBaseUrl}/repos/${owner}/${repo}/pulls/${params.pullNumber}/merge`, {
+        method: "PUT",
+        headers: {
+          "Authorization": `Bearer ${this.token}`,
+          "Accept": "application/vnd.github+json",
+          "User-Agent": "Outside-Orchestrator-Factory/1.0",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          commit_title: params.commitTitle,
+          commit_message: params.commitMessage,
+          merge_method: mergeMethod
+        })
+      });
+
+      const body = await res.json() as any;
+      if (res.ok && body.merged) {
+        return {
+          merged: true,
+          sha: body.sha,
+          message: body.message || "Pull Request successfully merged"
+        };
+      }
+
+      return {
+        merged: false,
+        message: body.message,
+        error: `Merge failed (HTTP ${res.status}): ${body.message || "Unknown error"}`
+      };
+    } catch (err: unknown) {
+      const error = err as Error;
+      return {
+        merged: false,
+        error: error.message
+      };
+    }
+  }
 }
+

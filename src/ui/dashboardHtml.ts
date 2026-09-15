@@ -1554,6 +1554,29 @@ export function getDashboardHtml(): string {
           setGateStatus("Winner", v.tournamentReady);
 
           document.getElementById("canonicalTuplePreview").textContent = data.canonicalMessage || "(canonical message not ready)";
+
+          // Check for open PR and render merge action
+          try {
+            const prRes = await fetch(\`/v1/runs/\${runId}/pr-status\`);
+            if (prRes.ok) {
+              const prData = await prRes.json();
+              if (prData.pr_number) {
+                const isMerged = prData.pull_request?.merged;
+                const statusBadge = isMerged
+                  ? '<span style="color: var(--emerald); font-weight: 600; font-size: 12px;">✔ Merged into main</span>'
+                  : \`<button id="mergeDeployBtn" class="btn btn-emerald" style="padding: 4px 10px; font-size: 12px; font-weight: 600;" onclick="executeMergeAndDeploy('\${runId}', \${prData.pr_number})">🔀 Merge PR & Deploy to VPS</button>\`;
+                const prDiv = document.createElement("div");
+                prDiv.id = "harvestPrDeck";
+                prDiv.style.cssText = "margin-top: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;";
+                prDiv.innerHTML = \`<a href="\${prData.pull_request?.htmlUrl || '#'}" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:rgba(0,240,255,0.15);border:1px solid var(--cyan);border-radius:4px;color:var(--cyan);font-weight:600;text-decoration:none;font-size:12px;">🔗 PR #\${prData.pr_number} (\${prData.pull_request?.state || 'open'})</a> \${statusBadge}\`;
+                const existing = document.getElementById("harvestPrDeck");
+                if (existing) existing.remove();
+                document.getElementById("canonicalTuplePreview").parentNode.appendChild(prDiv);
+              }
+            }
+          } catch {
+            // ignore
+          }
         } else {
           setGateStatus("Clean", false);
           setGateStatus("Erg", false);
@@ -1561,6 +1584,8 @@ export function getDashboardHtml(): string {
           setGateStatus("Advisory", false);
           setGateStatus("Winner", false);
           document.getElementById("canonicalTuplePreview").textContent = \`Proposal blocked: \${data.message || data.error}\`;
+          const existing = document.getElementById("harvestPrDeck");
+          if (existing) existing.remove();
         }
       } catch (err) {
         console.error("Load harvest proposal failed:", err);
@@ -1602,7 +1627,10 @@ export function getDashboardHtml(): string {
           msgElem.style.color = "var(--emerald)";
           let prHtml = "";
           if (data.pr_url) {
-            prHtml = \`<div style="margin-top:8px;"><a href="\${data.pr_url}" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:rgba(0,240,255,0.15);border:1px solid var(--cyan);border-radius:4px;color:var(--cyan);font-weight:600;text-decoration:none;font-size:12px;">🔗 Open GitHub Pull Request #\${data.pr_number || ''}</a></div>\`;
+            prHtml = \`<div style="margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+              <a href="\${data.pr_url}" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:rgba(0,240,255,0.15);border:1px solid var(--cyan);border-radius:4px;color:var(--cyan);font-weight:600;text-decoration:none;font-size:12px;">🔗 Open GitHub Pull Request #\${data.pr_number || ''}</a>
+              <button id="mergeDeployBtn" class="btn btn-emerald" style="padding: 4px 10px; font-size: 12px; font-weight: 600;" onclick="executeMergeAndDeploy('\${selectedRunId}', \${data.pr_number || 'null'})">🔀 Merge PR & Deploy to VPS</button>
+            </div>\`;
           }
           msgElem.innerHTML = \`<div>✔ Harvest Approved & Committed!</div><div style="font-family:monospace;font-size:11px;color:var(--text-muted);margin-top:2px;">Ref: \${data.git_ref} &bull; Branch: \${data.branch || 'N/A'}</div>\${prHtml}\`;
           loadHarvestProposal(selectedRunId);
@@ -1613,6 +1641,44 @@ export function getDashboardHtml(): string {
       } catch (err) {
         msgElem.style.color = "var(--rose)";
         msgElem.textContent = \`✖ Error: \${err.message}\`;
+      }
+    }
+
+    async function executeMergeAndDeploy(runId, prNum) {
+      const activeRunId = runId || selectedRunId;
+      if (!activeRunId) return;
+      const btn = document.getElementById("mergeDeployBtn");
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Merging & Deploying...";
+      }
+      try {
+        const res = await fetch(\`/v1/runs/\${activeRunId}/merge-pr\`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pr_number: prNum, deploy: true })
+        });
+        const data = await res.json();
+        if (res.ok && data.merged) {
+          if (btn) {
+            btn.textContent = \`✔ PR #\${data.prNumber || prNum} Merged & Deployed!\`;
+            btn.style.background = "var(--emerald)";
+          }
+          alert(\`✔ Pull Request #\${data.prNumber || prNum} successfully merged!\\nCommit: \${data.mergeCommitSha || 'N/A'}\\nDeployment: \${data.deployment?.status || 'success'}\`);
+          loadHarvestProposal(activeRunId);
+        } else {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = "✖ Merge Failed - Retry";
+          }
+          alert(\`Merge failed: \${data.message || data.error}\`);
+        }
+      } catch (err) {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "✖ Error - Retry";
+        }
+        alert(\`Error executing merge & deploy: \${err.message}\`);
       }
     }
 

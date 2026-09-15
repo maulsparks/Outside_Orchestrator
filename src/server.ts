@@ -34,6 +34,9 @@ import {
 import { SupabaseTournamentArmStore } from "./adapters/supabase/tournamentRepo.js";
 import { getDashboardHtml } from "./ui/dashboardHtml.js";
 import { TailscalePruner } from "./core/tailscalePruner.js";
+import { ContinuousDeploymentEngine } from "./core/continuousDeployment.js";
+import { PrMergeCoordinator } from "./core/prMergeCoordinator.js";
+import { GitHubPrPublisher } from "./adapters/github/prPublisher.js";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -53,6 +56,9 @@ let recoveryEngine: RecoveryEngine | null = null;
 let tournamentArmStore: TournamentArmStore | null = null;
 let tournamentArbitrator: TournamentArbitrator | null = null;
 let tailscalePruner: TailscalePruner | null = null;
+let githubPrPublisher: GitHubPrPublisher | null = null;
+let deploymentEngine: ContinuousDeploymentEngine | null = null;
+let prMergeCoordinator: PrMergeCoordinator | null = null;
 let wardenPublicKeyPem = "";
 let wardenPrivateKeyPem = "";
 
@@ -161,6 +167,17 @@ try {
       maxAgeMs: parseInt(process.env.TAILSCALE_MAX_AGE_MS || "3600000", 10),
       pruneIntervalMs: parseInt(process.env.TAILSCALE_PRUNE_INTERVAL_MS || "600000", 10)
     });
+
+    githubPrPublisher = new GitHubPrPublisher();
+    deploymentEngine = new ContinuousDeploymentEngine({
+      evidenceLedger: evidenceLedger ?? undefined
+    });
+    prMergeCoordinator = new PrMergeCoordinator({
+      githubPublisher: githubPrPublisher,
+      deploymentEngine,
+      runStore: runsRepo,
+      evidenceLedger: evidenceLedger ?? undefined
+    });
   }
 } catch (err) {
   console.warn("Supabase credentials not configured or failed to initialize, running in memory-fallback mode:", err);
@@ -179,6 +196,23 @@ if (!tailscalePruner) {
 if (!tournamentArmStore) {
   tournamentArmStore = new InMemoryTournamentArmStore();
   tournamentArbitrator = new TournamentArbitrator(tournamentArmStore);
+}
+
+if (!githubPrPublisher) {
+  githubPrPublisher = new GitHubPrPublisher();
+}
+if (!deploymentEngine) {
+  deploymentEngine = new ContinuousDeploymentEngine({
+    evidenceLedger: evidenceLedger ?? undefined
+  });
+}
+if (!prMergeCoordinator) {
+  prMergeCoordinator = new PrMergeCoordinator({
+    githubPublisher: githubPrPublisher,
+    deploymentEngine,
+    runStore: runsRepo ?? undefined,
+    evidenceLedger: evidenceLedger ?? undefined
+  });
 }
 
 if (!wardenPrivateKeyPem) {
@@ -213,6 +247,20 @@ function parseJsonBody<T>(req: http.IncomingMessage): Promise<T> {
         reject(err);
       }
     });
+    req.on("error", reject);
+  });
+}
+
+function getRawBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 2 * 1024 * 1024) {
+        reject(new Error("PayloadTooLarge"));
+      }
+    });
+    req.on("end", () => resolve(body));
     req.on("error", reject);
   });
 }
@@ -943,6 +991,122 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // 4b.2 Merge Pull Request & Continuous Deployment (POST /runs/:runId/merge-pr or POST /v1/runs/:runId/merge-pr)
+  const mergePrMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/merge-pr$/);
+  if (mergePrMatch && req.method === "POST") {
+    const runId = mergePrMatch[1];
+    if (!prMergeCoordinator || !runsRepo) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "CoordinatorUnavailable", message: "PR Merge Coordinator is not initialized" }));
+      return;
+    }
+
+    try {
+      const body = await parseJsonBody<{
+        pr_number?: number;
+        prNumber?: number;
+        merge_method?: "squash" | "merge" | "rebase";
+        mergeMethod?: "squash" | "merge" | "rebase";
+        require_approval?: boolean;
+        requireApproval?: boolean;
+        deploy?: boolean;
+        deploy_after_merge?: boolean;
+        deployAfterMerge?: boolean;
+        commit_title?: string;
+        commitTitle?: string;
+        commit_message?: string;
+        commitMessage?: string;
+      }>(req);
+
+      const prNumber = body.prNumber || body.pr_number;
+      const mergeMethod = body.mergeMethod || body.merge_method;
+      const requireApproval = body.requireApproval ?? body.require_approval;
+      const deployAfterMerge = body.deployAfterMerge ?? body.deploy_after_merge ?? body.deploy ?? true;
+
+      const result = await prMergeCoordinator.mergeAndDeployRunPr({
+        runId,
+        prNumber,
+        mergeMethod,
+        requireReviewApproval: requireApproval,
+        deployAfterMerge,
+        commitTitle: body.commitTitle || body.commit_title,
+        commitMessage: body.commitMessage || body.commit_message,
+        triggeredBy: "api:operator"
+      });
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(error.message.includes("blocked per Contract") ? 403 : 500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 4b.3 Query Pull Request & Deployment Status (GET /runs/:runId/pr-status or GET /v1/runs/:runId/pr-status)
+  const prStatusMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/pr-status$/);
+  if (prStatusMatch && req.method === "GET") {
+    const runId = prStatusMatch[1];
+    if (!githubPrPublisher || !runsRepo) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "PublisherUnavailable", message: "GitHub publisher is not initialized" }));
+      return;
+    }
+
+    try {
+      const branch = runId.startsWith("run-") ? `factory/${runId}` : `factory/run-${runId}`;
+      let prNumber: number | undefined;
+
+      if (evidenceLedger) {
+        const records = await evidenceLedger.getStore().getAllForRun(runId);
+        const prRecord = records.find((r) => {
+          const payload = r.payload as Record<string, unknown> | undefined;
+          const obs = payload?.observation as Record<string, unknown> | undefined;
+          return (obs?.pr_published && obs?.pr_number) || (payload?.pr_published && payload?.pr_number);
+        });
+        if (prRecord) {
+          const payload = prRecord.payload as Record<string, unknown> | undefined;
+          const obs = payload?.observation as Record<string, unknown> | undefined;
+          prNumber = Number(obs?.pr_number ?? payload?.pr_number);
+        }
+      }
+
+      if (!prNumber) {
+        const prResult = await githubPrPublisher.createPullRequest({
+          runId,
+          branch,
+          commitSha: "head"
+        });
+        prNumber = prResult.prNumber;
+      }
+
+      if (!prNumber) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "PullRequestNotFound", message: `No PR found for run ${runId} on branch ${branch}` }));
+        return;
+      }
+
+      const details = await githubPrPublisher.getPullRequest({ pullNumber: prNumber });
+      const reviews = await githubPrPublisher.getPullRequestReviews({ pullNumber: prNumber });
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        run_id: runId,
+        branch,
+        pr_number: prNumber,
+        pull_request: details,
+        reviews,
+        approved: reviews.some((r) => r.state === "APPROVED")
+      }));
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
   // 4c. Tournament Subsystem Endpoints (Contract §4, §6.8, §9 & §10 AC 9)
 
   // 4c.1 List & Evaluate Tournament Arms (GET /runs/:runId/tournament or GET /v1/runs/:runId/tournament)
@@ -1485,6 +1649,46 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // 10c. GitHub Webhook Ingress (POST /webhooks/github or POST /v1/webhooks/github)
+  if ((pathname === "/v1/webhooks/github" || pathname === "/webhooks/github") && req.method === "POST") {
+    if (!prMergeCoordinator) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "CoordinatorUnavailable", message: "PR Merge Coordinator is not initialized" }));
+      return;
+    }
+
+    try {
+      const rawBody = await getRawBody(req);
+      const signatureHeader = req.headers["x-hub-signature-256"] as string | undefined;
+      const event = (req.headers["x-github-event"] as string) || "ping";
+
+      const isValid = prMergeCoordinator.verifyWebhookSignature(rawBody, signatureHeader);
+      if (!isValid) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "InvalidSignature", message: "Webhook HMAC-SHA256 signature mismatch" }));
+        return;
+      }
+
+      let parsedPayload: any = {};
+      try {
+        parsedPayload = rawBody ? JSON.parse(rawBody) : {};
+      } catch {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "InvalidJsonPayload" }));
+        return;
+      }
+
+      const result = await prMergeCoordinator.handleWebhookEvent(event, parsedPayload);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+    } catch (err: unknown) {
+      const error = err as Error;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
   // 11. Default Not Found
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "not_found" }));
@@ -1533,3 +1737,6 @@ process.on("SIGINT", () => {
   });
   setTimeout(() => process.exit(0), 1500).unref();
 });
+
+export { server, prMergeCoordinator, deploymentEngine, githubPrPublisher };
+
