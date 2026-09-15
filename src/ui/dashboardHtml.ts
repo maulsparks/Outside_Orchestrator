@@ -784,6 +784,188 @@ export function getDashboardHtml(): string {
       outline: none;
       border-color: var(--cyan);
     }
+
+    /* Granular Diff & ERG Visualizer */
+    .diff-deck {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .diff-summary-card {
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1.25rem;
+    }
+
+    .diff-container {
+      display: flex;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      overflow: hidden;
+      min-height: 540px;
+      max-height: 720px;
+    }
+
+    .diff-files-sidebar {
+      width: 280px;
+      border-right: 1px solid var(--border-subtle);
+      background: rgba(0, 0, 0, 0.25);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .diff-files-header {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.3);
+    }
+
+    .diff-files-list {
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .diff-file-item {
+      padding: 0.65rem 0.85rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      transition: background 0.15s ease;
+    }
+
+    .diff-file-item:hover {
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .diff-file-item.active {
+      background: rgba(0, 240, 255, 0.08);
+      border-left: 3px solid var(--cyan);
+    }
+
+    .diff-viewer-deck {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: #080c14;
+      overflow: hidden;
+    }
+
+    .diff-toolbar {
+      padding: 0.65rem 1rem;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.35);
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .diff-view-content {
+      flex: 1;
+      overflow: auto;
+      font-family: var(--font-mono);
+      font-size: 0.775rem;
+      line-height: 1.45;
+    }
+
+    .diff-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    .diff-table td {
+      padding: 0.12rem 0.4rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+      vertical-align: top;
+    }
+
+    .diff-gutter {
+      width: 40px;
+      min-width: 40px;
+      max-width: 40px;
+      text-align: right;
+      padding-right: 8px !important;
+      color: var(--text-dim);
+      user-select: none;
+      border-right: 1px solid rgba(255, 255, 255, 0.06);
+      background: rgba(0, 0, 0, 0.2);
+    }
+
+    .diff-cell-del {
+      background: rgba(244, 63, 94, 0.15);
+      color: #fda4af;
+    }
+
+    .diff-cell-add {
+      background: rgba(16, 185, 129, 0.15);
+      color: #6ee7b7;
+    }
+
+    .diff-cell-context {
+      color: var(--text-muted);
+    }
+
+    .diff-cell-empty {
+      background: rgba(0, 0, 0, 0.25);
+    }
+
+    .diff-chunk-hdr {
+      background: rgba(0, 240, 255, 0.08);
+      color: var(--cyan);
+      padding: 0.25rem 0.75rem !important;
+      font-weight: 600;
+      font-size: 0.725rem;
+      border-top: 1px solid rgba(0, 240, 255, 0.15);
+      border-bottom: 1px solid rgba(0, 240, 255, 0.15);
+    }
+
+    .erg-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      font-size: 0.675rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .erg-badge-compliant {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--emerald);
+      border: 1px solid rgba(16, 185, 129, 0.35);
+    }
+
+    .erg-badge-undeclared {
+      background: rgba(244, 63, 94, 0.2);
+      color: var(--rose);
+      border: 1px solid var(--rose);
+    }
+
+    .erg-badge-immutable {
+      background: rgba(168, 85, 247, 0.2);
+      color: #c084fc;
+      border: 1px solid #c084fc;
+    }
+
+    .erg-badge-unallowed {
+      background: rgba(245, 158, 11, 0.2);
+      color: var(--amber);
+      border: 1px solid var(--amber);
+    }
   </style>
 </head>
 <body>
@@ -888,6 +1070,7 @@ export function getDashboardHtml(): string {
         <div class="tabs-bar">
           <button class="tab-btn active" onclick="selectTab('progression')">Run Progression</button>
           <button class="tab-btn" onclick="selectTab('tournament')">Tournament & Pareto Frontier</button>
+          <button class="tab-btn" onclick="selectTab('diff')">File Diff & ERG Visualizer</button>
           <button class="tab-btn" onclick="selectTab('harvest')">1-Click Harvest Review</button>
           <button class="tab-btn" onclick="selectTab('telemetry')">Prometheus Telemetry</button>
         </div>
@@ -1046,6 +1229,111 @@ export function getDashboardHtml(): string {
           </div>
         </div>
 
+        <!-- TAB: FILE DIFF & ERG VISUALIZER -->
+        <div id="tab-diff" class="tab-pane">
+          <div class="diff-deck">
+            <!-- ERG Summary Header Card -->
+            <div class="diff-summary-card">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
+                <div>
+                  <h3 style="font-size: 1.1rem; font-weight: 700; display: flex; align-items: center; gap: 0.5rem;">
+                    <span>Effect Reconciliation Gate (ERG) & Granular Diff Visualizer</span>
+                    <span id="diffErgSummaryBadge" class="gate-status-pill gate-fail">Pending Evaluation</span>
+                  </h3>
+                  <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">
+                    Independent host-side comparison of actual sandbox tree modifications against declared, allowed, and immutable boundaries (Contract §4, §6.6, §6.8 & §10).
+                  </p>
+                </div>
+                <div style="display: flex; gap: 0.75rem; align-items: center;">
+                  <button class="btn btn-sm" onclick="if(selectedRunId)loadRunDiff(selectedRunId)" title="Reload diffs">↻ Refresh Diff</button>
+                  <button class="btn btn-emerald btn-sm" onclick="selectTab('harvest')">Go to 1-Click Harvest Gate →</button>
+                </div>
+              </div>
+
+              <!-- ERG Metrics Grid -->
+              <div class="meta-grid" style="margin-top: 1rem;">
+                <div class="meta-item">
+                  <div class="meta-label">Parent Git SHA (Base Tree)</div>
+                  <div class="meta-value" id="diffBaseSha">--</div>
+                </div>
+                <div class="meta-item">
+                  <div class="meta-label">Accepted Sandbox Tree SHA</div>
+                  <div class="meta-value" id="diffPostSha">--</div>
+                </div>
+                <div class="meta-item">
+                  <div class="meta-label">Total Files & Churn</div>
+                  <div class="meta-value" id="diffChurnSummary">0 files (+0, -0)</div>
+                </div>
+                <div class="meta-item">
+                  <div class="meta-label">Undeclared Touches</div>
+                  <div class="meta-value" id="diffUndeclaredCount" style="color: var(--emerald);">0 (CLEAN)</div>
+                </div>
+              </div>
+
+              <!-- Bounded Paths Policies -->
+              <div style="margin-top: 0.75rem; display: flex; gap: 1.5rem; flex-wrap: wrap; font-size: 0.8rem;">
+                <div>
+                  <span class="kpi-label">Allowed Paths Globs:</span>
+                  <div id="diffAllowedChips" style="display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.25rem;">
+                    <span class="badge">output/**</span>
+                  </div>
+                </div>
+                <div>
+                  <span class="kpi-label">Immutable Path Guards:</span>
+                  <div id="diffImmutableChips" style="display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.25rem;">
+                    <span class="badge" style="border-color: rgba(244,63,94,0.4); color: #fda4af;">AGENTS.md</span>
+                    <span class="badge" style="border-color: rgba(244,63,94,0.4); color: #fda4af;">.github/**</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Rejection Reason Alert if any -->
+              <div id="diffErgAlertBox" style="display: none; margin-top: 0.75rem; padding: 0.65rem 1rem; background: rgba(244,63,94,0.15); border: 1px solid var(--rose); border-radius: 6px; color: #fecdd3; font-size: 0.825rem;"></div>
+            </div>
+
+            <!-- Two-Column Diff Explorer & Viewer -->
+            <div class="diff-container" style="margin-top: 1rem;">
+              <!-- Left Sidebar: Changed Files Navigator -->
+              <div class="diff-files-sidebar">
+                <div class="diff-files-header">
+                  <span style="font-weight: 700; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim);">Changed Files</span>
+                  <span id="diffFilesCountBadge" style="font-size: 0.75rem; font-family: var(--font-mono); color: var(--cyan);">0</span>
+                </div>
+                <div style="padding: 0.5rem;">
+                  <input type="text" id="diffFileFilterInput" class="form-input" style="width: 100%; padding: 0.35rem 0.6rem; font-size: 0.75rem;" placeholder="Filter files..." oninput="filterDiffFiles()">
+                </div>
+                <div id="diffFilesList" class="diff-files-list">
+                  <div style="padding: 2rem 1rem; text-align: center; color: var(--text-dim); font-size: 0.8rem;">Select a run to view sandbox diffs</div>
+                </div>
+              </div>
+
+              <!-- Right Pane: Diff Viewer Toolbar & Code View -->
+              <div class="diff-viewer-deck">
+                <div class="diff-toolbar">
+                  <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+                    <span id="diffActiveFilename" style="font-weight: 700; font-family: var(--font-mono); font-size: 0.85rem; color: #fff;">No file selected</span>
+                    <span id="diffActiveFileStats" style="font-family: var(--font-mono); font-size: 0.75rem;"></span>
+                    <span id="diffActiveFileErgBadge"></span>
+                  </div>
+
+                  <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <div style="display: flex; background: rgba(0,0,0,0.3); border: 1px solid var(--border-subtle); border-radius: 6px; overflow: hidden;">
+                      <button id="btnDiffSplit" class="btn btn-sm btn-primary" style="padding: 0.25rem 0.6rem; font-size: 0.75rem; border-radius: 0;" onclick="setDiffViewMode('split')">Side-by-Side</button>
+                      <button id="btnDiffUnified" class="btn btn-sm" style="padding: 0.25rem 0.6rem; font-size: 0.75rem; border-radius: 0; background: transparent;" onclick="setDiffViewMode('unified')">Unified</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="diffViewContent" class="diff-view-content">
+                  <div style="padding: 4rem 2rem; text-align: center; color: var(--text-dim); font-size: 0.85rem;">
+                    Select a changed file from the explorer on the left to inspect granular diffs.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- TAB 3: 1-CLICK HARVEST REVIEW -->
         <div id="tab-harvest" class="tab-pane">
           <div class="harvest-deck">
@@ -1069,6 +1357,7 @@ export function getDashboardHtml(): string {
                 <div class="gate-info">
                   <span id="gateIconErg">⏳</span>
                   <span>2. Effect Reconciliation Gate (Zero undeclared file touches)</span>
+                  <button class="btn btn-sm" style="margin-left: 0.75rem; padding: 0.15rem 0.5rem; font-size: 0.7rem; background: rgba(0,240,255,0.1); border: 1px solid var(--cyan); color: var(--cyan);" onclick="selectTab('diff')">🔍 Inspect Diffs & ERG</button>
                 </div>
                 <span id="gateBadgeErg" class="gate-status-pill gate-fail">Pending</span>
               </div>
@@ -1491,6 +1780,9 @@ export function getDashboardHtml(): string {
 
       // Load Harvest Proposal
       loadHarvestProposal(runId);
+
+      // Load Granular File Diff & ERG
+      loadRunDiff(runId);
     }
 
     function updateStepper(currentPhase) {
@@ -1785,6 +2077,308 @@ export function getDashboardHtml(): string {
       }
     }
 
+    /* --- Granular Diff & ERG Visualizer (Milestone 22) --- */
+    let currentDiffData = null;
+    let diffViewMode = "split"; // "split" | "unified"
+    let activeDiffFilename = null;
+
+    async function loadRunDiff(runId) {
+      const summaryBadge = document.getElementById("diffErgSummaryBadge");
+      const filesList = document.getElementById("diffFilesList");
+      const filesBadge = document.getElementById("diffFilesCountBadge");
+      const alertBox = document.getElementById("diffErgAlertBox");
+
+      if (summaryBadge) {
+        summaryBadge.textContent = "Loading...";
+        summaryBadge.className = "gate-status-pill";
+        summaryBadge.style.background = "rgba(0,240,255,0.15)";
+        summaryBadge.style.color = "var(--cyan)";
+      }
+
+      try {
+        const res = await fetch(\`/v1/runs/\${runId}/diff\`);
+        if (!res.ok) {
+          throw new Error(\`Failed to load diff (\${res.status}): \${res.statusText}\`);
+        }
+        const data = await res.json();
+        currentDiffData = data;
+
+        // Update ERG summary card
+        const erg = data.erg || {};
+        const passed = erg.passed;
+        const undeclared = (erg.undeclaredTouches || []).length;
+        const immutableViolations = (erg.immutableViolations || []).length;
+        const unallowedTouches = (erg.unallowedTouches || []).length;
+
+        if (summaryBadge) {
+          if (passed) {
+            summaryBadge.textContent = "✔ CLEAN ERG: ZERO UNDECLARED TOUCHES";
+            summaryBadge.className = "gate-status-pill gate-pass";
+            summaryBadge.style.background = "";
+            summaryBadge.style.color = "";
+          } else {
+            summaryBadge.textContent = \`✖ ERG VIOLATION (\${undeclared} undeclared, \${immutableViolations} immutable)\`;
+            summaryBadge.className = "gate-status-pill gate-fail";
+            summaryBadge.style.background = "";
+            summaryBadge.style.color = "";
+          }
+        }
+
+        const baseShaElem = document.getElementById("diffBaseSha");
+        if (baseShaElem) baseShaElem.textContent = (data.baseTreeSha || "--").slice(0, 16);
+        const postShaElem = document.getElementById("diffPostSha");
+        if (postShaElem) postShaElem.textContent = (data.acceptedTreeSha || "--").slice(0, 16);
+        const churnElem = document.getElementById("diffChurnSummary");
+        if (churnElem) churnElem.textContent = \`\${data.files?.length || 0} files (+\${data.totalAdditions || 0}, -\${data.totalDeletions || 0})\`;
+        
+        const undeclaredElem = document.getElementById("diffUndeclaredCount");
+        if (undeclaredElem) {
+          if (undeclared === 0 && immutableViolations === 0 && unallowedTouches === 0) {
+            undeclaredElem.textContent = "0 (CLEAN)";
+            undeclaredElem.style.color = "var(--emerald)";
+          } else {
+            undeclaredElem.textContent = \`\${undeclared} undeclared / \${immutableViolations} immutable\`;
+            undeclaredElem.style.color = "var(--rose)";
+          }
+        }
+
+        // Render Allowed & Immutable chips
+        const allowedChips = document.getElementById("diffAllowedChips");
+        if (allowedChips && Array.isArray(data.allowedPaths)) {
+          allowedChips.innerHTML = data.allowedPaths.map(p => \`<span class="badge" style="border-color:rgba(16,185,129,0.3);color:#6ee7b7;">\${p}</span>\`).join("");
+        }
+        const immutableChips = document.getElementById("diffImmutableChips");
+        if (immutableChips && Array.isArray(data.immutablePaths)) {
+          immutableChips.innerHTML = data.immutablePaths.map(p => \`<span class="badge" style="border-color:rgba(244,63,94,0.4);color:#fda4af;">\${p}</span>\`).join("");
+        }
+
+        // Rejection Alert
+        if (alertBox) {
+          if (!passed && erg.rejectionReason) {
+            alertBox.style.display = "block";
+            alertBox.innerHTML = \`<strong>⚠️ Effect Reconciliation Gate Blocked:</strong> \${escapeHtml(erg.rejectionReason)}<br><span style="font-size:11px;opacity:0.85;">Harvest authorization is cryptographically prohibited until sandbox modifications conform strictly to declared and allowed boundaries.</span>\`;
+          } else {
+            alertBox.style.display = "none";
+          }
+        }
+
+        // Render Files Sidebar
+        renderDiffFilesList();
+
+        // Select first file if available
+        if (data.files && data.files.length > 0) {
+          selectDiffFile(data.files[0].filename);
+        } else {
+          document.getElementById("diffActiveFilename").textContent = "No file changes detected";
+          document.getElementById("diffActiveFileStats").textContent = "";
+          document.getElementById("diffActiveFileErgBadge").innerHTML = "";
+          document.getElementById("diffViewContent").innerHTML = '<div style="padding: 4rem 2rem; text-align: center; color: var(--text-dim); font-size: 0.85rem;">Zero file mutations observed between parent commit and accepted tree.</div>';
+        }
+      } catch (err) {
+        console.error("loadRunDiff error:", err);
+        if (summaryBadge) {
+          summaryBadge.textContent = "Diff Unavailable";
+          summaryBadge.className = "gate-status-pill gate-fail";
+          summaryBadge.style.background = "";
+          summaryBadge.style.color = "";
+        }
+        if (filesList) {
+          filesList.innerHTML = \`<div style="padding: 2rem 1rem; text-align: center; color: var(--rose); font-size: 0.8rem;">Failed to load diffs: \${err.message}</div>\`;
+        }
+      }
+    }
+
+    function renderDiffFilesList() {
+      const filesList = document.getElementById("diffFilesList");
+      const filesBadge = document.getElementById("diffFilesCountBadge");
+      const filter = (document.getElementById("diffFileFilterInput")?.value || "").toLowerCase().trim();
+
+      if (!currentDiffData || !Array.isArray(currentDiffData.files)) {
+        if (filesList) filesList.innerHTML = '<div style="padding: 2rem 1rem; text-align: center; color: var(--text-dim);">No files</div>';
+        return;
+      }
+
+      const files = currentDiffData.files.filter(f => !filter || f.filename.toLowerCase().includes(filter));
+      if (filesBadge) filesBadge.textContent = currentDiffData.files.length;
+
+      if (files.length === 0) {
+        filesList.innerHTML = \`<div style="padding: 2rem 1rem; text-align: center; color: var(--text-dim); font-size: 0.8rem;">\${filter ? "No matching files" : "Zero modified files"}</div>\`;
+        return;
+      }
+
+      filesList.innerHTML = files.map(f => {
+        const isActive = f.filename === activeDiffFilename;
+        let badgeHtml = '<span class="erg-badge erg-badge-compliant">✔ Declared</span>';
+        if (f.ergStatus === "immutable_violation") {
+          badgeHtml = '<span class="erg-badge erg-badge-immutable">🚫 Immutable</span>';
+        } else if (f.ergStatus === "undeclared_touch") {
+          badgeHtml = '<span class="erg-badge erg-badge-undeclared">⚠️ Undeclared</span>';
+        } else if (f.ergStatus === "unallowed_touch") {
+          badgeHtml = '<span class="erg-badge erg-badge-unallowed">⚠️ Unallowed</span>';
+        }
+
+        const icon = f.status === "added" ? "➕" : (f.status === "deleted" ? "❌" : "📄");
+        const parts = f.filename.split("/");
+        const baseName = parts.pop() || f.filename;
+        const dirName = parts.length > 0 ? parts.join("/") : "";
+
+        return \`
+          <div class="diff-file-item \${isActive ? "active" : ""}" onclick="selectDiffFile('\${f.filename}')">
+            <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem;">
+              <span style="font-weight: 600; font-family: var(--font-mono); font-size: 0.775rem; color: #fff; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">\${icon} \${baseName}</span>
+              <span style="font-family: var(--font-mono); font-size: 0.7rem; white-space: nowrap;">
+                <span style="color: var(--emerald);">+\${f.additions}</span>
+                <span style="color: var(--rose); margin-left: 2px;">-\${f.deletions}</span>
+              </span>
+            </div>
+            \${dirName ? \`<div style="font-size: 0.675rem; color: var(--text-dim); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; font-family: var(--font-mono);">\${dirName}</div>\` : ""}
+            <div style="margin-top: 2px;">\${badgeHtml}</div>
+          </div>
+        \`;
+      }).join("");
+    }
+
+    function filterDiffFiles() {
+      renderDiffFilesList();
+    }
+
+    function selectDiffFile(filename) {
+      activeDiffFilename = filename;
+      renderDiffFilesList();
+
+      if (!currentDiffData || !currentDiffData.files) return;
+      const file = currentDiffData.files.find(f => f.filename === filename);
+      if (!file) return;
+
+      document.getElementById("diffActiveFilename").textContent = file.filename;
+      document.getElementById("diffActiveFileStats").innerHTML = \`<span style="color: var(--emerald);">+\${file.additions}</span> <span style="color: var(--rose);">-\${file.deletions}</span> (\${file.status})\`;
+
+      const badgeElem = document.getElementById("diffActiveFileErgBadge");
+      if (file.ergStatus === "compliant") {
+        badgeElem.innerHTML = '<span class="erg-badge erg-badge-compliant">✔ Declared & Allowed in ERG</span>';
+      } else if (file.ergStatus === "immutable_violation") {
+        badgeElem.innerHTML = '<span class="erg-badge erg-badge-immutable">🚫 Immutable Authority Touch Violation</span>';
+      } else if (file.ergStatus === "undeclared_touch") {
+        badgeElem.innerHTML = '<span class="erg-badge erg-badge-undeclared">⚠️ Undeclared Touch (ERG Violation)</span>';
+      } else {
+        badgeElem.innerHTML = '<span class="erg-badge erg-badge-unallowed">⚠️ Unallowed Path Touch</span>';
+      }
+
+      renderActiveFileContent(file);
+    }
+
+    function setDiffViewMode(mode) {
+      diffViewMode = mode;
+      const splitBtn = document.getElementById("btnDiffSplit");
+      const unifiedBtn = document.getElementById("btnDiffUnified");
+      if (mode === "split") {
+        splitBtn.className = "btn btn-sm btn-primary";
+        splitBtn.style.background = "";
+        unifiedBtn.className = "btn btn-sm";
+        unifiedBtn.style.background = "transparent";
+      } else {
+        unifiedBtn.className = "btn btn-sm btn-primary";
+        unifiedBtn.style.background = "";
+        splitBtn.className = "btn btn-sm";
+        splitBtn.style.background = "transparent";
+      }
+
+      if (currentDiffData && activeDiffFilename) {
+        const file = currentDiffData.files.find(f => f.filename === activeDiffFilename);
+        if (file) renderActiveFileContent(file);
+      }
+    }
+
+    function renderActiveFileContent(file) {
+      const container = document.getElementById("diffViewContent");
+      if (!file || !file.chunks || file.chunks.length === 0) {
+        container.innerHTML = '<div style="padding: 4rem 2rem; text-align: center; color: var(--text-dim);">No diff chunks available for this file.</div>';
+        return;
+      }
+
+      if (diffViewMode === "split") {
+        renderSplitDiff(file, container);
+      } else {
+        renderUnifiedDiff(file, container);
+      }
+    }
+
+    function renderSplitDiff(file, container) {
+      const rows = file.sideBySideRows || [];
+      if (rows.length === 0) {
+        container.innerHTML = '<div style="padding: 3rem 1rem; text-align: center; color: var(--text-dim);">File changed, but no chunk rows parsed.</div>';
+        return;
+      }
+
+      let html = '<table class="diff-table"><tbody>';
+      for (const row of rows) {
+        const l = row.left;
+        const r = row.right;
+
+        const leftClass = l.type === "delete" ? "diff-cell-del" : (l.type === "empty" ? "diff-cell-empty" : "diff-cell-context");
+        const rightClass = r.type === "add" ? "diff-cell-add" : (r.type === "empty" ? "diff-cell-empty" : "diff-cell-context");
+
+        const leftNum = l.lineNumber !== undefined ? l.lineNumber : "";
+        const rightNum = r.lineNumber !== undefined ? r.lineNumber : "";
+
+        const leftPrefix = l.type === "delete" ? "-" : (l.type === "context" ? " " : "");
+        const rightPrefix = r.type === "add" ? "+" : (r.type === "context" ? " " : "");
+
+        const leftContent = escapeHtml(l.content);
+        const rightContent = escapeHtml(r.content);
+
+        html += \`
+          <tr>
+            <td class="diff-gutter">\${leftNum}</td>
+            <td class="\${leftClass}" style="width: 48%;">\${leftPrefix ? leftPrefix + " " : ""}\${leftContent}</td>
+            <td class="diff-gutter">\${rightNum}</td>
+            <td class="\${rightClass}" style="width: 48%;">\${rightPrefix ? rightPrefix + " " : ""}\${rightContent}</td>
+          </tr>
+        \`;
+      }
+      html += "</tbody></table>";
+      container.innerHTML = html;
+    }
+
+    function renderUnifiedDiff(file, container) {
+      const chunks = file.chunks || [];
+      let html = '<table class="diff-table"><tbody>';
+
+      for (const chunk of chunks) {
+        html += \`<tr><td colspan="3" class="diff-chunk-hdr">\${escapeHtml(chunk.header)}</td></tr>\`;
+
+        for (const line of chunk.lines) {
+          const isAdd = line.type === "add";
+          const isDel = line.type === "delete";
+          const cellClass = isAdd ? "diff-cell-add" : (isDel ? "diff-cell-del" : "diff-cell-context");
+          const prefix = isAdd ? "+" : (isDel ? "-" : " ");
+          const oldNum = line.oldLineNumber !== undefined ? line.oldLineNumber : "";
+          const newNum = line.newLineNumber !== undefined ? line.newLineNumber : "";
+
+          html += \`
+            <tr>
+              <td class="diff-gutter">\${oldNum}</td>
+              <td class="diff-gutter">\${newNum}</td>
+              <td class="\${cellClass}">\${prefix} \${escapeHtml(line.content)}</td>
+            </tr>
+          \`;
+        }
+      }
+
+      html += "</tbody></table>";
+      container.innerHTML = html;
+    }
+
+    function escapeHtml(str) {
+      if (!str) return "";
+      return str
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
     function selectTab(tabId) {
       document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
       document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
@@ -1793,6 +2387,10 @@ export function getDashboardHtml(): string {
       if (btn) btn.classList.add("active");
       const pane = document.getElementById("tab-" + tabId);
       if (pane) pane.classList.add("active");
+
+      if (tabId === "diff" && selectedRunId) {
+        loadRunDiff(selectedRunId);
+      }
 
       if (tabId === "telemetry") {
         renderSvgCharts();

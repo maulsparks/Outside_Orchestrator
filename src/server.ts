@@ -38,6 +38,7 @@ import { ContinuousDeploymentEngine } from "./core/continuousDeployment.js";
 import { PrMergeCoordinator } from "./core/prMergeCoordinator.js";
 import { GitHubPrPublisher } from "./adapters/github/prPublisher.js";
 import { TaskDecomposer } from "./core/taskDecomposer.js";
+import { getRunDiffAndErg } from "./core/diffEngine.js";
 
 const taskDecomposer = new TaskDecomposer();
 
@@ -744,6 +745,40 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(proposal));
+    } catch (err: unknown) {
+      const error = err as Error;
+      const statusCode = error.message.includes("RunNotFound") ? 404 : 500;
+      res.writeHead(statusCode, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.name || "Error", message: error.message }));
+    }
+    return;
+  }
+
+  // 4a.2. Granular File Diff & ERG Inspection (GET /runs/:runId/diff or GET /v1/runs/:runId/diff)
+  const diffMatch = pathname.match(/^\/(?:v1\/)?runs\/([^/]+)\/diff$/);
+  if (diffMatch && (req.method === "GET" || req.method === "HEAD")) {
+    const runId = diffMatch[1];
+    if (!runsRepo) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "StorageUnavailable" }));
+      return;
+    }
+
+    try {
+      const diffResult = await getRunDiffAndErg({
+        runId,
+        runStore: runsRepo,
+        phaseStore: phaseEnvelopeStore ?? undefined,
+        evidenceStore: evidenceLedger ? evidenceLedger.getStore() : undefined,
+        armStore: tournamentArmStore ?? undefined
+      });
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.method === "HEAD") {
+        res.end();
+        return;
+      }
+      res.end(JSON.stringify(diffResult));
     } catch (err: unknown) {
       const error = err as Error;
       const statusCode = error.message.includes("RunNotFound") ? 404 : 500;
@@ -1745,17 +1780,19 @@ const server = http.createServer(async (req, res) => {
 
 const watchdog = new SystemdWatchdog();
 
-server.listen(PORT, HOST, async () => {
-  console.log(`Outside Orchestrator listening on http://${HOST}:${PORT}`);
-  if (watchdog.isAvailable()) {
-    await watchdog.notifyReady();
-    watchdog.startWatchdog(10000);
-    console.log("[SystemdWatchdog] Notified READY=1 and initiated 10s heartbeats.");
-  }
-  if (tailscalePruner && process.env.TAILSCALE_PRUNER_DISABLED !== "true") {
-    tailscalePruner.startDaemon();
-  }
-});
+if (process.env.NODE_ENV !== "test") {
+  server.listen(PORT, HOST, async () => {
+    console.log(`Outside Orchestrator listening on http://${HOST}:${PORT}`);
+    if (watchdog.isAvailable()) {
+      await watchdog.notifyReady();
+      watchdog.startWatchdog(10000);
+      console.log("[SystemdWatchdog] Notified READY=1 and initiated 10s heartbeats.");
+    }
+    if (tailscalePruner && process.env.TAILSCALE_PRUNER_DISABLED !== "true") {
+      tailscalePruner.startDaemon();
+    }
+  });
+}
 
 process.on("SIGTERM", () => {
   console.log("Received SIGTERM. Stopping watchdog, pruning daemon, and shutting down server...");
