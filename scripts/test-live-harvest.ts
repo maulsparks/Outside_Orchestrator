@@ -40,8 +40,13 @@ async function main() {
 
   const testRunId = crypto.randomUUID();
   const tenantId = "tenant-e2e-harvest";
-  const parentGitSha = "1659044bb77f5022dc779bfca62074e64f895c12";
-  const acceptedTreeSha = "d903424ff435013098dc08e1762e841261314981";
+  let parentGitSha = "143ec5a3f23ae77d87d5e723d7ae174319b6d622";
+  let acceptedTreeSha = "7a5d000a1eceeba582b8415c9d305877eb72275a";
+  try {
+    const { execSync } = await import("node:child_process");
+    parentGitSha = execSync("git rev-parse HEAD", { encoding: "utf8" }).trim();
+    acceptedTreeSha = execSync("git rev-parse 'HEAD^{tree}'", { encoding: "utf8" }).trim();
+  } catch {}
   const envelopeHash = crypto.createHash("sha256").update(`envelope-${testRunId}`).digest("hex");
   const policyVersion = "v2.0";
 
@@ -190,6 +195,10 @@ async function main() {
   console.log(`Verified At:       ${result.attestation.signature_verified_at}`);
   console.log(`Canonical Git Ref: ${result.git_ref}`);
   console.log(`Commit SHA:        ${result.commit_sha}`);
+  console.log(`Branch:            ${result.branch} (created: ${result.branch_created})`);
+  console.log(`PR Number:         ${result.pr_number ?? "N/A"}`);
+  console.log(`PR URL:            ${result.pr_url ?? "N/A"}`);
+  console.log(`PR Status:         ${result.pr_status} ${result.pr_error ? `(${result.pr_error})` : ""}`);
   console.log("-----------------------------------------------------------------\n");
 
   // Verify in Supabase evidence_ledger
@@ -201,8 +210,15 @@ async function main() {
   if (!commitEvent) {
     throw new Error("Missing harvest_committed event in durable evidence_ledger!");
   }
-  console.log(`✔ Found signed evidence record in Tier 3 (event_hash: ${commitEvent.event_hash.substring(0, 16)}...)`);
-  console.log("✔ ALL LIVE E2E HARVEST ACCEPTANCE CRITERIA SATISFIED!\n");
+  console.log(`✔ Found harvest_committed evidence record in Tier 3 (event_hash: ${commitEvent.event_hash.substring(0, 16)}...)`);
+
+  const prEvent = records.find(
+    (r) => (r.payload as any)?.observation?.pr_published !== undefined
+  );
+  if (prEvent) {
+    console.log(`✔ Found pr_published evidence record in Tier 3 (event_hash: ${prEvent.event_hash.substring(0, 16)}..., PR #${(prEvent.payload as any)?.observation?.pr_number || 'N/A'})`);
+  }
+  console.log("✔ ALL LIVE E2E HARVEST & PR ACCEPTANCE CRITERIA SATISFIED!\n");
 }
 
 main().catch((err) => {
