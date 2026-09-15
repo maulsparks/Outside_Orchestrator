@@ -88,9 +88,9 @@ export class ContinuousDeploymentEngine {
         
         let binary = "bash";
         let args = [this.deployScriptPath];
-        if (fs.existsSync("/usr/bin/systemd-run") && fs.existsSync("/usr/bin/sudo")) {
-          binary = "sudo";
-          args = ["/usr/bin/systemd-run", "--scope", "--quiet", "bash", this.deployScriptPath];
+        if (fs.existsSync("/usr/bin/systemd-run")) {
+          binary = "/usr/bin/systemd-run";
+          args = ["--scope", "--quiet", "bash", this.deployScriptPath];
         }
 
         const proc = await execFileAsync(binary, args, {

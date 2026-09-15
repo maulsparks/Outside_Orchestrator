@@ -33,15 +33,10 @@ npm run build
 echo "[3/5] Verifying Policy-as-Code & Security Invariants..."
 node dist/scripts/lint-policy.js
 
-SUDO_CMD=""
-if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
-  SUDO_CMD="sudo"
-fi
-
 echo "[4/5] Restarting systemd service (${SERVICE_NAME})..."
 if command -v systemctl >/dev/null 2>&1; then
-  ${SUDO_CMD} systemctl daemon-reload || true
-  ${SUDO_CMD} systemctl restart "${SERVICE_NAME}"
+  systemctl daemon-reload || true
+  systemctl restart "${SERVICE_NAME}"
 else
   echo "⚠ systemctl not found, skipping service restart."
 fi
