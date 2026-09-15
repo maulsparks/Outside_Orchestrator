@@ -1599,7 +1599,11 @@ export function getDashboardHtml(): string {
         const data = await res.json();
         if (res.ok && data.success) {
           msgElem.style.color = "var(--emerald)";
-          msgElem.textContent = \`✔ Harvest Approved & Committed! Ref: \${data.git_ref}\`;
+          let prHtml = "";
+          if (data.pr_url) {
+            prHtml = \`<div style="margin-top:8px;"><a href="\${data.pr_url}" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:rgba(0,240,255,0.15);border:1px solid var(--cyan);border-radius:4px;color:var(--cyan);font-weight:600;text-decoration:none;font-size:12px;">🔗 Open GitHub Pull Request #\${data.pr_number || ''}</a></div>\`;
+          }
+          msgElem.innerHTML = \`<div>✔ Harvest Approved & Committed!</div><div style="font-family:monospace;font-size:11px;color:var(--text-muted);margin-top:2px;">Ref: \${data.git_ref} &bull; Branch: \${data.branch || 'N/A'}</div>\${prHtml}\`;
           loadHarvestProposal(selectedRunId);
         } else {
           msgElem.style.color = "var(--rose)";

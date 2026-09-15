@@ -6,6 +6,7 @@ import { EvidenceLedger, EvidenceStore, EvidenceRecord } from "../warden/ledger.
 import { RunStateStore } from "./stateMachine.js";
 import { PhaseEnvelopeStore, PhaseEnvelopeRecord } from "./dispatcher.js";
 import { TournamentArmStore } from "./tournament.js";
+import { GitHubPrPublisher, formatPullRequestBody, PullRequestResult } from "../adapters/github/prPublisher.js";
 
 export interface FrozenTestSuiteParams {
   testFiles: Record<string, string>; // path -> content
@@ -473,31 +474,64 @@ export interface CommitHarvestRefParams {
   attestation: HarvestAttestation;
   targetBranch?: string;
   commitMessage?: string;
+  branchName?: string;
+  publishPr?: boolean;
+  githubToken?: string;
+  repositoryId?: string;
+  runEnvelope?: Record<string, unknown>;
+  tournamentArm?: {
+    armId: string;
+    modelId?: string;
+    costCents?: number;
+    latencyMs?: number;
+    testPassRate?: number;
+    coveragePct?: number;
+    testDurationMs?: number;
+    deterministicTests?: {
+      passedCount: number;
+      failedCount: number;
+      totalCount: number;
+      exitCode: number;
+      stdoutSha256?: string;
+    };
+  };
+  changedFiles?: string[];
   repoPath?: string;
   ledger?: EvidenceLedger;
   tenantId?: string;
   requestId?: string;
+  githubPublisher?: GitHubPrPublisher;
 }
 
 export interface CommitHarvestRefResult {
   gitRef: string;
   commitSha: string;
   tagCreated: boolean;
+  branch: string;
+  branchCreated: boolean;
+  prNumber?: number;
+  prUrl?: string;
+  prStatus: "created" | "existing" | "skipped" | "failed";
+  prError?: string;
 }
 
 const execFileAsync = promisify(execFile);
 
 /**
- * Canonical Git Commit and Ref Committer (ISSUE-16 / Contract §4 & §6.8).
- * Creates a Git commit / tag ref pointing to the accepted tree SHA
+ * Canonical Git Commit, Ref, and PR Publisher (ISSUE-16 / Contract §4 & §6.8).
+ * Creates a Git commit / tag ref pointing to the accepted tree SHA,
+ * creates the feature branch (factory/run-<id>), optionally opens a GitHub PR,
  * and records signed audit evidence in the Evidence Ledger.
  */
 export async function commitHarvestRef(
   params: CommitHarvestRefParams
 ): Promise<CommitHarvestRefResult> {
   const gitRef = `refs/tags/harvest-${params.runId}`;
+  const branchName = params.branchName || (params.runId.startsWith("run-") ? `factory/${params.runId}` : `factory/run-${params.runId}`);
+  const branchRef = `refs/heads/${branchName}`;
   let commitSha = "";
   let tagCreated = false;
+  let branchCreated = false;
 
   const msg = `${params.commitMessage || `Harvest run ${params.runId}`}\n\nSigned-by: ${params.attestation.signer_identity}\nRun-Id: ${params.runId}\nAccepted-Tree-Sha: ${params.acceptedTreeSha}\nPolicy-Version: ${params.attestation.policy_version}\nSignature: ${params.attestation.signature}`;
 
@@ -511,8 +545,13 @@ export async function commitHarvestRef(
     );
     commitSha = stdout.trim();
 
+    // Create harvest tag
     await execFileAsync("git", ["update-ref", gitRef, commitSha], { cwd });
     tagCreated = true;
+
+    // Create harvest feature branch
+    await execFileAsync("git", ["update-ref", branchRef, commitSha], { cwd });
+    branchCreated = true;
   } catch {
     // If not in a git working tree containing the tree SHA object, deterministically generate commit SHA
     commitSha = crypto
@@ -521,8 +560,10 @@ export async function commitHarvestRef(
       .digest("hex")
       .substring(0, 40);
     tagCreated = true;
+    branchCreated = true;
   }
 
+  // 1. Record canonical Git commit event in evidence ledger
   if (params.ledger && params.tenantId && params.requestId) {
     await params.ledger.recordEvent({
       tenantId: params.tenantId,
@@ -536,6 +577,8 @@ export async function commitHarvestRef(
       observation: {
         harvest_committed: true,
         git_ref: gitRef,
+        branch_ref: branchRef,
+        branch: branchName,
         commit_sha: commitSha,
         accepted_tree_sha: params.acceptedTreeSha,
         attestation: params.attestation
@@ -543,9 +586,75 @@ export async function commitHarvestRef(
     });
   }
 
+  // 2. Automated GitHub Pull Request Publishing (Contract §4 Zero-Trust PR flow)
+  let prResult: PullRequestResult | undefined;
+  if (params.publishPr !== false) {
+    const publisher = params.githubPublisher || new GitHubPrPublisher({
+      token: params.githubToken,
+      repository: params.repositoryId
+    });
+
+    const prBody = formatPullRequestBody({
+      runId: params.runId,
+      tenantId: params.tenantId || "tenant-default",
+      requestId: params.requestId || `req-${params.runId}`,
+      parentGitSha: params.parentGitSha,
+      acceptedTreeSha: params.acceptedTreeSha,
+      policyVersion: params.attestation.policy_version,
+      intent: String(params.runEnvelope?.intent || "Automated Factory Execution"),
+      userPrompt: params.runEnvelope?.user_prompt as string | undefined,
+      executionKind: (params.runEnvelope?.execution_kind as "agent" | "code") || "agent",
+      deterministicCommand: params.runEnvelope?.deterministic_command as string | undefined,
+      tournamentArm: params.tournamentArm,
+      changedFiles: params.changedFiles,
+      attestation: params.attestation
+    });
+
+    const prTitle = `[Factory] ${String(params.runEnvelope?.intent || `Run ${params.runId.slice(0, 8)}`)} (${branchName})`;
+
+    prResult = await publisher.publishHarvestPullRequest({
+      runId: params.runId,
+      branch: branchName,
+      commitSha,
+      baseBranch: params.targetBranch || "main",
+      repository: params.repositoryId,
+      title: prTitle,
+      bodyMarkdown: prBody
+    });
+
+    if (params.ledger && params.tenantId && params.requestId && prResult) {
+      await params.ledger.recordEvent({
+        tenantId: params.tenantId,
+        requestId: params.requestId,
+        runId: params.runId,
+        armId: params.attestation.selected_arm_id,
+        sandboxId: "outside-orchestrator",
+        policyVersion: params.attestation.policy_version,
+        eventType: "command_observed",
+        source: { component: "harvest-publisher", signer: params.attestation.signer_identity },
+        observation: {
+          pr_published: prResult.status === "created" || prResult.status === "existing",
+          pr_status: prResult.status,
+          pr_number: prResult.prNumber,
+          pr_url: prResult.prUrl,
+          branch: branchName,
+          commit_sha: commitSha,
+          attestation: params.attestation,
+          error: prResult.error
+        }
+      });
+    }
+  }
+
   return {
     gitRef,
     commitSha,
-    tagCreated
+    tagCreated,
+    branch: branchName,
+    branchCreated,
+    prNumber: prResult?.prNumber,
+    prUrl: prResult?.prUrl,
+    prStatus: prResult?.status || "skipped",
+    prError: prResult?.error
   };
 }

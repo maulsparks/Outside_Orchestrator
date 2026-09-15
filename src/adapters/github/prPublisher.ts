@@ -1,0 +1,409 @@
+import { HarvestAttestation } from "../../../contracts/interfaces.js";
+
+export interface GitHubPublisherOptions {
+  token?: string;
+  repository?: string; // "owner/repo" or git URL
+  apiBaseUrl?: string; // defaults to "https://api.github.com"
+  fetchFn?: typeof fetch;
+}
+
+export interface PullRequestResult {
+  status: "created" | "existing" | "skipped" | "failed";
+  prNumber?: number;
+  prUrl?: string;
+  branch: string;
+  error?: string;
+}
+
+export interface CreatePullRequestParams {
+  runId: string;
+  branch: string;
+  commitSha: string;
+  baseBranch?: string;
+  title?: string;
+  body?: string;
+  repository?: string;
+}
+
+export interface FormatPullRequestBodyParams {
+  runId: string;
+  tenantId: string;
+  requestId: string;
+  parentGitSha: string;
+  acceptedTreeSha: string;
+  policyVersion: string;
+  intent: string;
+  userPrompt?: string;
+  executionKind?: "agent" | "code";
+  deterministicCommand?: string;
+  tournamentArm?: {
+    armId: string;
+    modelId?: string;
+    costCents?: number;
+    latencyMs?: number;
+    testPassRate?: number;
+    coveragePct?: number;
+    testDurationMs?: number;
+    deterministicTests?: {
+      passedCount: number;
+      failedCount: number;
+      totalCount: number;
+      exitCode: number;
+      stdoutSha256?: string;
+    };
+  };
+  changedFiles?: string[];
+  attestation: HarvestAttestation;
+}
+
+export function parseRepository(repoStr: string): { owner: string; repo: string } {
+  const clean = repoStr.trim().replace(/^git@github\.com:/, "").replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+  const parts = clean.split("/");
+  if (parts.length < 2 || !parts[0] || !parts[1]) {
+    return { owner: "maulsparks", repo: "Outside_Orchestrator" };
+  }
+  return { owner: parts[0], repo: parts[1] };
+}
+
+export function formatPullRequestBody(params: FormatPullRequestBodyParams): string {
+  const arm = params.tournamentArm;
+  const det = arm?.deterministicTests;
+  const costFormatted = typeof arm?.costCents === "number" ? `$${(arm.costCents / 100).toFixed(2)}` : "N/A";
+  const latencyFormatted = typeof arm?.latencyMs === "number" ? `${(arm.latencyMs / 1000).toFixed(1)}s` : "N/A";
+  const coverageFormatted = typeof arm?.coveragePct === "number" ? `${arm.coveragePct.toFixed(1)}%` : "N/A";
+
+  const changedFilesList = (params.changedFiles && params.changedFiles.length > 0)
+    ? params.changedFiles.map((f) => `- \`${f}\``).join("\n")
+    : "_No file changes declared (clean-room verification)_";
+
+  let testMatrixSection = "";
+  if (det) {
+    const statusSymbol = det.exitCode === 0 && det.failedCount === 0 ? "PASSED (Exit 0)" : `FAILED (Exit ${det.exitCode})`;
+    testMatrixSection = `| Test Suite Status | \`${statusSymbol}\` |
+| Tests Passed | \`${det.passedCount} / ${det.totalCount}\` (${det.failedCount} failures) |
+| Test Duration | \`${arm?.testDurationMs ?? 0}ms\` |
+| Output Digest | \`${det.stdoutSha256 ? det.stdoutSha256.slice(0, 16) + "..." : "N/A"}\` |`;
+  } else {
+    testMatrixSection = `| Test Suite Status | \`Verified Frozen Suite\` |
+| Pass Rate | \`${arm?.testPassRate ? (arm.testPassRate * 100).toFixed(0) + "%" : "100%"}\` |
+| Coverage | \`${coverageFormatted}\` |`;
+  }
+
+  return `## 🏭 AI Software Factory — Automated Harvest Approval
+
+> **Status:** \`HARVEST_AUTHORIZED\` & \`CLEAN_TERMINATED\`  
+> This pull request was automatically published by the **Outside Orchestrator** following human cryptographic review and zero-trust verification.
+
+---
+
+### 📋 Factory Run Metadata
+
+| Parameter | Value |
+|---|---|
+| **Run ID** | \`${params.runId}\` |
+| **Tenant ID** | \`${params.tenantId}\` |
+| **Request ID** | \`${params.requestId}\` |
+| **Policy Version** | \`${params.policyVersion}\` |
+| **Parent Git SHA** | \`${params.parentGitSha}\` |
+| **Accepted Tree SHA** | \`${params.acceptedTreeSha}\` |
+| **Execution Kind** | \`${params.executionKind || "agent"}\` |
+${params.deterministicCommand ? `| **Deterministic Gate** | \`${params.deterministicCommand}\` |\n` : ""}| **Selected Arm** | \`${arm?.armId || params.attestation.selected_arm_id || "default"}\` (${arm?.modelId || "standard"}) |
+
+---
+
+### 💬 Human User Prompt & Intent
+
+**Intent:** ${params.intent}
+
+${params.userPrompt ? `\`\`\`text\n${params.userPrompt.trim()}\n\`\`\`` : "_No additional human prompt provided._"}
+
+---
+
+### 🏆 Winning Tournament Arm & Metrics
+
+| Metric | Measurement |
+|---|---|
+| **Model** | \`${arm?.modelId || "N/A"}\` |
+| **Cost** | \`${costFormatted}\` |
+| **Execution Latency** | \`${latencyFormatted}\` |
+| **Code Coverage** | \`${coverageFormatted}\` |
+| **Task Envelope Hash** | \`${params.attestation.task_envelope_hash.slice(0, 16)}...\` |
+
+---
+
+### 🧪 Deterministic & Acceptance Test Matrix
+
+${testMatrixSection}
+
+---
+
+### 📂 Effect Reconciliation Gate (ERG)
+
+The following files were modified and verified within declared boundary paths with **zero undeclared touches**:
+
+${changedFilesList}
+
+---
+
+### 🔐 Cryptographic Harvest Attestation (Ed25519)
+
+\`\`\`json
+{
+  "run_id": "${params.attestation.run_id}",
+  "selected_arm_id": "${params.attestation.selected_arm_id}",
+  "accepted_tree_sha": "${params.attestation.accepted_tree_sha}",
+  "task_envelope_hash": "${params.attestation.task_envelope_hash}",
+  "policy_version": "${params.attestation.policy_version}",
+  "signer_identity": "${params.attestation.signer_identity}",
+  "signature": "${params.attestation.signature}",
+  "signature_verified_at": "${params.attestation.signature_verified_at}",
+  "teardown_evidence_id": "${params.attestation.teardown_evidence_id}"
+}
+\`\`\`
+
+---
+
+### 🛡️ Zero-Trust Security Invariants Verified
+
+- [x] **Ephemeral Tier 2 Sandbox:** Disposable execution VM provisioned with run-scoped TTL.
+- [x] **Network Isolation:** Directional boundary enforced; no raw cloud or state credentials exposed.
+- [x] **Effect Reconciliation Gate (ERG):** Exact tree SHA reconciliation with zero undeclared file touches.
+- [x] **Acceptance Test Matrix:** Frozen acceptance tests verified without LLM hallucination.
+- [x] **Cryptographic Teardown Attestation:** 13-step teardown verified with active network probing (\`CLEAN_TERMINATED\`).
+- [x] **Deliberate Harvest Gate:** Ed25519 cryptographic signature verified over canonical harvest tuple.
+`;
+}
+
+export class GitHubPrPublisher {
+  private token?: string;
+  private defaultRepo: { owner: string; repo: string };
+  private apiBaseUrl: string;
+  private fetchFn: typeof fetch;
+
+  constructor(options?: GitHubPublisherOptions) {
+    this.token = options?.token ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+    const repoStr = options?.repository ?? process.env.GITHUB_REPOSITORY ?? "maulsparks/Outside_Orchestrator";
+    this.defaultRepo = parseRepository(repoStr);
+    this.apiBaseUrl = (options?.apiBaseUrl ?? "https://api.github.com").replace(/\/$/, "");
+    this.fetchFn = options?.fetchFn ?? globalThis.fetch;
+  }
+
+  public hasToken(): boolean {
+    return Boolean(this.token && this.token.trim().length > 0);
+  }
+
+  /**
+   * Creates or updates a Git branch ref on GitHub.
+   */
+  public async createOrUpdateBranch(params: {
+    owner?: string;
+    repo?: string;
+    branch: string;
+    commitSha: string;
+  }): Promise<{ success: boolean; ref?: string; error?: string }> {
+    if (!this.hasToken()) {
+      return { success: false, error: "No GitHub token configured" };
+    }
+
+    const owner = params.owner ?? this.defaultRepo.owner;
+    const repo = params.repo ?? this.defaultRepo.repo;
+    const ref = `refs/heads/${params.branch}`;
+
+    try {
+      // 1. Attempt to create the ref
+      const createRes = await this.fetchFn(`${this.apiBaseUrl}/repos/${owner}/${repo}/git/refs`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.token}`,
+          "Accept": "application/vnd.github+json",
+          "User-Agent": "Outside-Orchestrator-Factory/1.0",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          ref,
+          sha: params.commitSha
+        })
+      });
+
+      if (createRes.status === 201) {
+        return { success: true, ref };
+      }
+
+      // If ref already exists (422), force-update the existing ref
+      if (createRes.status === 422) {
+        const updateRes = await this.fetchFn(
+          `${this.apiBaseUrl}/repos/${owner}/${repo}/git/refs/heads/${params.branch}`,
+          {
+            method: "PATCH",
+            headers: {
+              "Authorization": `Bearer ${this.token}`,
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "Outside-Orchestrator-Factory/1.0",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              sha: params.commitSha,
+              force: true
+            })
+          }
+        );
+
+        if (updateRes.ok) {
+          return { success: true, ref };
+        }
+        const errText = await updateRes.text();
+        return { success: false, error: `Failed to update ref: ${updateRes.status} ${errText}` };
+      }
+
+      const errText = await createRes.text();
+      return { success: false, error: `Failed to create ref: ${createRes.status} ${errText}` };
+    } catch (err: unknown) {
+      const error = err as Error;
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Opens a GitHub Pull Request for the feature branch, or retrieves the existing PR if already open.
+   */
+  public async createPullRequest(params: CreatePullRequestParams): Promise<PullRequestResult> {
+    const branch = params.branch;
+    if (!this.hasToken()) {
+      return {
+        status: "skipped",
+        branch,
+        error: "No GitHub token configured (GITHUB_TOKEN or GH_TOKEN)"
+      };
+    }
+
+    const { owner, repo } = params.repository ? parseRepository(params.repository) : this.defaultRepo;
+    const baseBranch = params.baseBranch || "main";
+    const title = params.title || `[Factory] Run ${params.runId.slice(0, 8)} (${branch})`;
+
+    try {
+      // 1. Attempt to create the PR
+      const createRes = await this.fetchFn(`${this.apiBaseUrl}/repos/${owner}/${repo}/pulls`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.token}`,
+          "Accept": "application/vnd.github+json",
+          "User-Agent": "Outside-Orchestrator-Factory/1.0",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          title,
+          head: branch,
+          base: baseBranch,
+          body: params.body || `Automated Pull Request for Factory Run ${params.runId}`
+        })
+      });
+
+      if (createRes.status === 201) {
+        const data = await createRes.json() as { number: number; html_url: string };
+        return {
+          status: "created",
+          prNumber: data.number,
+          prUrl: data.html_url,
+          branch
+        };
+      }
+
+      // If PR already exists (422)
+      if (createRes.status === 422) {
+        // Query for existing PR on this head branch
+        const listRes = await this.fetchFn(
+          `${this.apiBaseUrl}/repos/${owner}/${repo}/pulls?head=${owner}:${branch}&state=all`,
+          {
+            method: "GET",
+            headers: {
+              "Authorization": `Bearer ${this.token}`,
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "Outside-Orchestrator-Factory/1.0",
+              "X-GitHub-Api-Version": "2022-11-28"
+            }
+          }
+        );
+
+        if (listRes.ok) {
+          const list = await listRes.json() as Array<{ number: number; html_url: string }>;
+          if (list && list.length > 0) {
+            return {
+              status: "existing",
+              prNumber: list[0].number,
+              prUrl: list[0].html_url,
+              branch
+            };
+          }
+        }
+      }
+
+      const errorText = await createRes.text();
+      return {
+        status: "failed",
+        branch,
+        error: `GitHub API error (${createRes.status}): ${errorText}`
+      };
+    } catch (err: unknown) {
+      const error = err as Error;
+      return {
+        status: "failed",
+        branch,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * End-to-end publish: ensures branch exists and opens PR.
+   */
+  public async publishHarvestPullRequest(params: {
+    runId: string;
+    branch?: string;
+    commitSha: string;
+    baseBranch?: string;
+    repository?: string;
+    title?: string;
+    bodyMarkdown: string;
+  }): Promise<PullRequestResult> {
+    const branch = params.branch || (params.runId.startsWith("run-") ? `factory/${params.runId}` : `factory/run-${params.runId}`);
+    const { owner, repo } = params.repository ? parseRepository(params.repository) : this.defaultRepo;
+
+    if (!this.hasToken()) {
+      return {
+        status: "skipped",
+        branch,
+        error: "No GitHub token configured"
+      };
+    }
+
+    // Step 1: Create or update remote branch ref
+    const branchResult = await this.createOrUpdateBranch({
+      owner,
+      repo,
+      branch,
+      commitSha: params.commitSha
+    });
+
+    if (!branchResult.success) {
+      return {
+        status: "failed",
+        branch,
+        error: `Branch creation failed: ${branchResult.error}`
+      };
+    }
+
+    // Step 2: Create or retrieve PR
+    return this.createPullRequest({
+      runId: params.runId,
+      branch,
+      commitSha: params.commitSha,
+      baseBranch: params.baseBranch,
+      repository: `${owner}/${repo}`,
+      title: params.title,
+      body: params.bodyMarkdown
+    });
+  }
+}

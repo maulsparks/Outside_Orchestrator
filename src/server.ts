@@ -587,7 +587,10 @@ const server = http.createServer(async (req, res) => {
         public_key_pem?: string;
         teardown_evidence_id?: string;
         target_branch?: string;
+        branch_name?: string;
         commit_message?: string;
+        github_token?: string;
+        publish_pr?: boolean;
       }>(req);
 
       // Dynamically evaluate proposal and gate readiness
@@ -623,14 +626,50 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      // Canonical Git commit / tag ref update
+      // Fetch winning arm details if present
+      let winningArmData: any = undefined;
+      const armIdToUse = body.selected_arm_id ?? proposal.selectedArmId;
+      if (tournamentArmStore && armIdToUse && armIdToUse !== "default" && armIdToUse !== "unselected") {
+        try {
+          const arms = await tournamentArmStore.listArmsForRun(runId);
+          const found = arms.find((a) => a.arm_id === armIdToUse);
+          if (found) {
+            const rawDet = (found.metadata?.deterministic_tests ?? found.metadata?.deterministicTests) as Record<string, unknown> | undefined;
+            winningArmData = {
+              armId: found.arm_id,
+              modelId: found.model_id,
+              costCents: found.cost_cents,
+              latencyMs: found.latency_ms,
+              coveragePct: typeof found.metadata?.coverage_pct === "number" ? Number(found.metadata.coverage_pct) : undefined,
+              deterministicTests: rawDet ? {
+                passedCount: Number(rawDet.passed_count ?? rawDet.passedCount ?? 0),
+                failedCount: Number(rawDet.failed_count ?? rawDet.failedCount ?? 0),
+                totalCount: Number(rawDet.total_count ?? rawDet.totalCount ?? 0),
+                exitCode: Number(rawDet.exit_code ?? rawDet.exitCode ?? 0),
+                stdoutSha256: (rawDet.stdout_sha256 ?? rawDet.stdoutSha256) as string | undefined
+              } : undefined
+            };
+          }
+        } catch {
+          // Fallback
+        }
+      }
+
+      // Canonical Git commit, feature branch ref, and GitHub PR publish
       const commitResult = await commitHarvestRef({
         runId,
         acceptedTreeSha: proposal.acceptedTreeSha,
         parentGitSha: proposal.parentGitSha,
         attestation: result.attestation!,
         targetBranch: body.target_branch ?? "main",
+        branchName: body.branch_name,
         commitMessage: body.commit_message ?? `Harvest run ${runId} (authorized by ${body.signer_identity})`,
+        publishPr: body.publish_pr ?? true,
+        githubToken: body.github_token ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN,
+        repositoryId: (run.envelope as any)?.repository_id || "maulsparks/Outside_Orchestrator",
+        runEnvelope: run.envelope as Record<string, unknown>,
+        tournamentArm: winningArmData,
+        changedFiles: proposal.summary?.declaredChanges,
         ledger: evidenceLedger ?? undefined,
         tenantId: run.tenant_id,
         requestId: run.request_id
@@ -638,10 +677,17 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
+        success: true,
         authorized: true,
         attestation: result.attestation,
         git_ref: commitResult.gitRef,
         commit_sha: commitResult.commitSha,
+        branch: commitResult.branch,
+        branch_created: commitResult.branchCreated,
+        pr_number: commitResult.prNumber,
+        pr_url: commitResult.prUrl,
+        pr_status: commitResult.prStatus,
+        pr_error: commitResult.prError,
         reasons: []
       }));
     } catch (err: unknown) {
@@ -674,6 +720,9 @@ const server = http.createServer(async (req, res) => {
         reviewer_identity?: string;
         private_key?: string;
         target_branch?: string;
+        branch_name?: string;
+        github_token?: string;
+        publish_pr?: boolean;
       }>(req);
 
       const proposal = await prepareHarvestProposal({
@@ -730,13 +779,48 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      // Fetch winning arm details if present
+      let winningArmData: any = undefined;
+      if (tournamentArmStore && proposal.selectedArmId && proposal.selectedArmId !== "default" && proposal.selectedArmId !== "unselected") {
+        try {
+          const arms = await tournamentArmStore.listArmsForRun(runId);
+          const found = arms.find((a) => a.arm_id === proposal.selectedArmId);
+          if (found) {
+            const rawDet = (found.metadata?.deterministic_tests ?? found.metadata?.deterministicTests) as Record<string, unknown> | undefined;
+            winningArmData = {
+              armId: found.arm_id,
+              modelId: found.model_id,
+              costCents: found.cost_cents,
+              latencyMs: found.latency_ms,
+              coveragePct: typeof found.metadata?.coverage_pct === "number" ? Number(found.metadata.coverage_pct) : undefined,
+              deterministicTests: rawDet ? {
+                passedCount: Number(rawDet.passed_count ?? rawDet.passedCount ?? 0),
+                failedCount: Number(rawDet.failed_count ?? rawDet.failedCount ?? 0),
+                totalCount: Number(rawDet.total_count ?? rawDet.totalCount ?? 0),
+                exitCode: Number(rawDet.exit_code ?? rawDet.exitCode ?? 0),
+                stdoutSha256: (rawDet.stdout_sha256 ?? rawDet.stdoutSha256) as string | undefined
+              } : undefined
+            };
+          }
+        } catch {
+          // Fallback
+        }
+      }
+
       const commitResult = await commitHarvestRef({
         runId,
         acceptedTreeSha: proposal.acceptedTreeSha,
         parentGitSha: proposal.parentGitSha,
         attestation: authResult.attestation!,
         targetBranch: body.target_branch ?? "main",
+        branchName: body.branch_name,
         commitMessage: `1-Click Harvest run ${runId} (authorized by ${reviewerIdentity})`,
+        publishPr: body.publish_pr ?? true,
+        githubToken: body.github_token ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN,
+        repositoryId: (run.envelope as any)?.repository_id || "maulsparks/Outside_Orchestrator",
+        runEnvelope: run.envelope as Record<string, unknown>,
+        tournamentArm: winningArmData,
+        changedFiles: proposal.summary?.declaredChanges,
         ledger: evidenceLedger ?? undefined,
         tenantId: run.tenant_id,
         requestId: run.request_id
@@ -749,7 +833,13 @@ const server = http.createServer(async (req, res) => {
         authorized: true,
         attestation: authResult.attestation,
         git_ref: commitResult.gitRef,
-        commit_sha: commitResult.commitSha
+        commit_sha: commitResult.commitSha,
+        branch: commitResult.branch,
+        branch_created: commitResult.branchCreated,
+        pr_number: commitResult.prNumber,
+        pr_url: commitResult.prUrl,
+        pr_status: commitResult.prStatus,
+        pr_error: commitResult.prError
       }));
     } catch (err: unknown) {
       const error = err as Error;
