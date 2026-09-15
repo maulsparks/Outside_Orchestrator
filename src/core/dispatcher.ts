@@ -13,6 +13,8 @@ export interface BuildDelegationOptions {
   agentsMdSha256: string;
   userPrompt?: string;
   maxFixLoops?: number;
+  executionKind?: "agent" | "code";
+  deterministicCommand?: string;
   allowedPaths: string[];
   immutablePaths: string[];
   acceptanceCriteria: string[];
@@ -225,6 +227,8 @@ export class DelegationDispatcher {
       agents_md_sha256: options.agentsMdSha256,
       user_prompt: options.userPrompt,
       max_fix_loops: options.maxFixLoops ?? 3,
+      execution_kind: options.executionKind ?? (options.phase === "test" ? "code" : "agent"),
+      deterministic_command: options.deterministicCommand ?? (options.executionKind === "code" || options.phase === "test" ? "npm test" : undefined),
       allowed_paths: options.allowedPaths,
       immutable_paths: options.immutablePaths,
       acceptance_criteria: options.acceptanceCriteria,

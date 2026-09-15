@@ -13,6 +13,8 @@ export interface CreateRunRequest {
   intent: string;
   userPrompt?: string;
   maxFixLoops?: number;
+  executionKind?: "agent" | "code";
+  deterministicCommand?: string;
   acceptanceCriteria: string[];
   policyVersion: string;
   agentsMdSha256?: string;
@@ -74,6 +76,8 @@ export class RequestAdmissionEngine {
 
     const userPrompt = req.userPrompt;
     const maxFixLoops = req.maxFixLoops ?? 3;
+    const executionKind = req.executionKind ?? "agent";
+    const deterministicCommand = req.deterministicCommand;
     const intent = req.intent || (userPrompt ? userPrompt.trim().split("\n")[0].slice(0, 100) : "execute");
 
     // 2. Validate request shape according to intake contract
@@ -86,6 +90,8 @@ export class RequestAdmissionEngine {
       intent,
       user_prompt: userPrompt,
       max_fix_loops: maxFixLoops,
+      execution_kind: executionKind,
+      deterministic_command: deterministicCommand,
       acceptance_criteria: req.acceptanceCriteria,
       policy_version: req.policyVersion,
       agents_md_sha256: agentsMdSha256,
@@ -117,6 +123,8 @@ export class RequestAdmissionEngine {
         intent,
         user_prompt: userPrompt,
         max_fix_loops: maxFixLoops,
+        execution_kind: executionKind,
+        deterministic_command: deterministicCommand,
         acceptance_criteria: req.acceptanceCriteria,
         repository_id: req.repositoryId,
         agents_md_sha256: agentsMdSha256

@@ -37,6 +37,8 @@ export interface LiveDispatchConfig {
   ttlSeconds?: number;
   pollIntervalMs?: number;
   maxWaitBootMs?: number;
+  executionKind?: "agent" | "code";
+  deterministicCommand?: string;
 }
 
 export interface LiveDispatchResult {
@@ -247,6 +249,8 @@ export class LiveDispatcher {
       const maxFixLoops = typeof (run.envelope as Record<string, unknown>)?.max_fix_loops === "number"
         ? Number((run.envelope as Record<string, unknown>).max_fix_loops)
         : 3;
+      const executionKind = config.executionKind ?? ((run.envelope as Record<string, unknown>)?.execution_kind as ("agent" | "code") | undefined);
+      const deterministicCommand = config.deterministicCommand ?? ((run.envelope as Record<string, unknown>)?.deterministic_command as string | undefined);
       const runAcceptance = ((run.envelope as Record<string, unknown>)?.acceptance_criteria as string[]) ?? ["Phase outputs valid results within allowed paths"];
 
       const dispatchOptions: BuildDelegationOptions = {
@@ -257,6 +261,8 @@ export class LiveDispatcher {
         agentsMdSha256: resolvedAgentsMdSha256,
         userPrompt,
         maxFixLoops,
+        executionKind,
+        deterministicCommand,
         allowedPaths,
         immutablePaths: config.immutablePaths ?? ["AGENTS.md"],
         acceptanceCriteria: runAcceptance,

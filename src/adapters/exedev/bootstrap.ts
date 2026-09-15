@@ -23,6 +23,7 @@ const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
 let currentDelegation = null;
 let runStatus = "ready";
@@ -92,7 +93,112 @@ const server = http.createServer((req, res) => {
           }
         }
 
-        // Bounded correction loop execution (MAX_FIX_LOOPS)
+        // Deterministic Code-First Test Gate (kind="code" / zero LLM inference tokens)
+        if (currentDelegation.execution_kind === "code") {
+          const targetPath = (currentDelegation.allowed_paths && currentDelegation.allowed_paths[0])
+            ? currentDelegation.allowed_paths[0].replace(/\\/\\*.*$/, '')
+            : 'output';
+          const outputDir = path.join('/tmp/sandbox-repo', targetPath);
+          const cmd = currentDelegation.deterministic_command || "echo 'Deterministic code gate passed'";
+          const cmdStart = Date.now();
+
+          addTraceEvent("deterministic_command_started", {
+            command: cmd,
+            phase: currentDelegation.phase
+          });
+
+          try {
+            let stdout = "";
+            try {
+              stdout = execSync(cmd, {
+                cwd: '/tmp/sandbox-repo',
+                timeout: 30000,
+                encoding: 'utf8',
+                stdio: ['pipe', 'pipe', 'pipe']
+              });
+            } catch (fallbackErr) {
+              // If cwd doesn't exist yet, execute from process.cwd() or simulate pass
+              stdout = execSync(cmd, { timeout: 30000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+            }
+
+            const durationMs = Date.now() - cmdStart;
+            const stdoutHash = crypto.createHash('sha256').update(stdout || '', 'utf8').digest('hex');
+
+            fs.mkdirSync(outputDir, { recursive: true });
+            const artifactFile = path.join(outputDir, 'phase_result.json');
+            fs.writeFileSync(artifactFile, JSON.stringify({
+              status: "success",
+              phase: currentDelegation.phase,
+              execution_kind: "code",
+              command: cmd,
+              exit_code: 0,
+              stdout_sha256: stdoutHash,
+              duration_ms: durationMs,
+              timestamp: new Date().toISOString()
+            }, null, 2));
+
+            changedFiles = [path.join(targetPath, 'phase_result.json').replace(/\\\\/g, '/')];
+            runStatus = "completed";
+
+            addTraceEvent("deterministic_command_completed", {
+              phase: currentDelegation.phase,
+              command: cmd,
+              exit_code: 0,
+              stdout_sha256: stdoutHash,
+              duration_ms: durationMs
+            });
+
+            addTraceEvent("phase_completed", {
+              phase: currentDelegation.phase,
+              declared_changed_files: changedFiles,
+              exit_code: 0,
+              execution_kind: "code"
+            });
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ accepted: true, status: runStatus, execution_kind: "code" }));
+          } catch (cmdErr) {
+            const durationMs = Date.now() - cmdStart;
+            const exitCode = typeof cmdErr.status === 'number' ? cmdErr.status : 1;
+            const stderr = (cmdErr.stderr || cmdErr.message || '').toString();
+
+            fs.mkdirSync(outputDir, { recursive: true });
+            const artifactFile = path.join(outputDir, 'phase_result.json');
+            fs.writeFileSync(artifactFile, JSON.stringify({
+              status: "failed",
+              phase: currentDelegation.phase,
+              execution_kind: "code",
+              command: cmd,
+              exit_code: exitCode,
+              error: stderr,
+              duration_ms: durationMs,
+              timestamp: new Date().toISOString()
+            }, null, 2));
+
+            changedFiles = [path.join(targetPath, 'phase_result.json').replace(/\\\\/g, '/')];
+            runStatus = "failed";
+
+            addTraceEvent("deterministic_command_completed", {
+              phase: currentDelegation.phase,
+              command: cmd,
+              exit_code: exitCode,
+              error: stderr,
+              duration_ms: durationMs
+            });
+
+            addTraceEvent("phase_failed", {
+              phase: currentDelegation.phase,
+              exit_code: exitCode,
+              error: stderr,
+              execution_kind: "code"
+            });
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ accepted: true, status: runStatus, execution_kind: "code" }));
+          }
+        }
+
+        // Bounded correction loop execution (MAX_FIX_LOOPS for kind="agent")
         const targetPath = (currentDelegation.allowed_paths && currentDelegation.allowed_paths[0])
           ? currentDelegation.allowed_paths[0].replace(/\\/\\*.*$/, '')
           : 'output';
@@ -299,6 +405,7 @@ import hashlib
 import os
 import sys
 import time
+import subprocess
 from urllib.parse import urlparse
 
 PORT = ${port}
@@ -437,6 +544,96 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 allowed_paths = CURRENT_DELEGATION.get("allowed_paths", ["output/**"])
                 target_path = allowed_paths[0].replace("/**", "").replace("/*", "") if allowed_paths else "output"
                 output_dir = os.path.join("/tmp/sandbox-repo", target_path)
+
+                # Deterministic Code-First Test Gate (kind="code" / zero LLM inference tokens)
+                if CURRENT_DELEGATION.get("execution_kind") == "code":
+                    cmd = CURRENT_DELEGATION.get("deterministic_command") or "echo 'Deterministic code gate passed'"
+                    cmd_start = time.time()
+                    add_trace("deterministic_command_started", {
+                        "command": cmd,
+                        "phase": CURRENT_DELEGATION.get("phase")
+                    })
+
+                    try:
+                        work_dir = "/tmp/sandbox-repo" if os.path.exists("/tmp/sandbox-repo") else None
+                        res = subprocess.run(
+                            cmd,
+                            shell=True,
+                            cwd=work_dir,
+                            capture_output=True,
+                            text=True,
+                            timeout=30
+                        )
+                        duration_ms = int((time.time() - cmd_start) * 1000)
+                        stdout_hash = hashlib.sha256((res.stdout or "").encode('utf-8')).hexdigest()
+
+                        os.makedirs(output_dir, exist_ok=True)
+                        artifact_file = os.path.join(output_dir, "phase_result.json")
+                        with open(artifact_file, "w") as f:
+                            json.dump({
+                                "status": "success" if res.returncode == 0 else "failed",
+                                "phase": CURRENT_DELEGATION.get("phase"),
+                                "execution_kind": "code",
+                                "command": cmd,
+                                "exit_code": res.returncode,
+                                "stdout_sha256": stdout_hash,
+                                "duration_ms": duration_ms,
+                                "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                            }, f, indent=2)
+
+                        CHANGED_FILES = [f"{target_path}/phase_result.json"]
+                        RUN_STATUS = "completed" if res.returncode == 0 else "failed"
+
+                        add_trace("deterministic_command_completed", {
+                            "phase": CURRENT_DELEGATION.get("phase"),
+                            "command": cmd,
+                            "exit_code": res.returncode,
+                            "stdout_sha256": stdout_hash,
+                            "duration_ms": duration_ms
+                        })
+
+                        if res.returncode == 0:
+                            add_trace("phase_completed", {
+                                "phase": CURRENT_DELEGATION.get("phase"),
+                                "declared_changed_files": CHANGED_FILES,
+                                "exit_code": 0,
+                                "execution_kind": "code"
+                            })
+                        else:
+                            add_trace("phase_failed", {
+                                "phase": CURRENT_DELEGATION.get("phase"),
+                                "exit_code": res.returncode,
+                                "error": res.stderr or "Non-zero exit code",
+                                "execution_kind": "code"
+                            })
+
+                        self.send_json(200, {"accepted": True, "status": RUN_STATUS, "execution_kind": "code"})
+                        return
+                    except Exception as cmd_err:
+                        duration_ms = int((time.time() - cmd_start) * 1000)
+                        os.makedirs(output_dir, exist_ok=True)
+                        artifact_file = os.path.join(output_dir, "phase_result.json")
+                        with open(artifact_file, "w") as f:
+                            json.dump({
+                                "status": "failed",
+                                "phase": CURRENT_DELEGATION.get("phase"),
+                                "execution_kind": "code",
+                                "command": cmd,
+                                "exit_code": 1,
+                                "error": str(cmd_err),
+                                "duration_ms": duration_ms,
+                                "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                            }, f, indent=2)
+                        CHANGED_FILES = [f"{target_path}/phase_result.json"]
+                        RUN_STATUS = "failed"
+                        add_trace("phase_failed", {
+                            "phase": CURRENT_DELEGATION.get("phase"),
+                            "exit_code": 1,
+                            "error": str(cmd_err),
+                            "execution_kind": "code"
+                        })
+                        self.send_json(200, {"accepted": True, "status": RUN_STATUS, "execution_kind": "code"})
+                        return
 
                 loop_success = False
                 while FIX_LOOP_COUNT < MAX_FIX_LOOPS and not loop_success:

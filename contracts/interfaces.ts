@@ -9,6 +9,8 @@ export interface FactoryRequest {
   intent: string;
   user_prompt?: string;
   max_fix_loops?: number;
+  execution_kind?: "agent" | "code";
+  deterministic_command?: string;
   acceptance_criteria: string[];
   policy_version: string;
   agents_md_sha256: string;
@@ -29,6 +31,8 @@ export interface SandboxDelegation {
   agents_md_sha256: string;
   user_prompt?: string;
   max_fix_loops?: number;
+  execution_kind?: "agent" | "code";
+  deterministic_command?: string;
   allowed_paths: string[];
   immutable_paths: string[];
   acceptance_criteria: string[];

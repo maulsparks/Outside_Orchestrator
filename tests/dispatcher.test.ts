@@ -131,4 +131,50 @@ test("DelegationDispatcher sets max_fix_loops and defaults to 3", async () => {
   assert.notEqual(resDefault.envelopeHash, resCustom.envelopeHash);
 });
 
+test("DelegationDispatcher sets execution_kind and deterministic_command with phase-aware defaults", async () => {
+  const dispatcher = new DelegationDispatcher();
+  const run = makeRun();
+
+  const baseOptions = {
+    run,
+    phaseAttempt: 1,
+    taskEnvelopeHash: "a".repeat(64),
+    agentsMdSha256: "b".repeat(64),
+    allowedPaths: ["src/**"],
+    immutablePaths: ["AGENTS.md"],
+    acceptanceCriteria: ["AC 1"],
+    commandPolicyId: "policy-standard",
+    runtimeCredentialReference: "cred-ref-001",
+    ttlSeconds: 3600
+  };
+
+  // 1. "build" phase defaults to execution_kind: "agent" and no deterministic command
+  const resBuild = await dispatcher.buildAndDispatchEnvelope({
+    ...baseOptions,
+    phase: "build"
+  });
+  assert.equal(resBuild.envelope.execution_kind, "agent");
+  assert.equal(resBuild.envelope.deterministic_command, undefined);
+
+  // 2. "test" phase defaults to execution_kind: "code" and deterministic_command: "npm test"
+  const resTest = await dispatcher.buildAndDispatchEnvelope({
+    ...baseOptions,
+    phase: "test"
+  });
+  assert.equal(resTest.envelope.execution_kind, "code");
+  assert.equal(resTest.envelope.deterministic_command, "npm test");
+
+  // 3. Explicit code gate with custom command (e.g. pytest, bun test)
+  const resCustomCode = await dispatcher.buildAndDispatchEnvelope({
+    ...baseOptions,
+    phase: "test",
+    executionKind: "code",
+    deterministicCommand: "pytest -v"
+  });
+  assert.equal(resCustomCode.envelope.execution_kind, "code");
+  assert.equal(resCustomCode.envelope.deterministic_command, "pytest -v");
+  assert.notEqual(resTest.envelopeHash, resCustomCode.envelopeHash);
+});
+
+
 

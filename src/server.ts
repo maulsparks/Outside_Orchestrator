@@ -322,6 +322,8 @@ const server = http.createServer(async (req, res) => {
 
       const userPrompt = rawBody.userPrompt || rawBody.user_prompt || rawBody.prompt;
       const maxFixLoops = typeof rawBody.maxFixLoops === "number" ? rawBody.maxFixLoops : (typeof rawBody.max_fix_loops === "number" ? rawBody.max_fix_loops : undefined);
+      const executionKind = rawBody.executionKind || rawBody.execution_kind;
+      const deterministicCommand = rawBody.deterministicCommand || rawBody.deterministic_command;
       const intent = rawBody.intent || (userPrompt ? userPrompt.trim().split("\n")[0].slice(0, 100) : "execute");
 
       const body: CreateRunRequest = {
@@ -333,6 +335,8 @@ const server = http.createServer(async (req, res) => {
         intent,
         userPrompt,
         maxFixLoops,
+        executionKind,
+        deterministicCommand,
         acceptanceCriteria: rawBody.acceptanceCriteria || rawBody.acceptance_criteria || (rawBody.envelope?.acceptance_criteria) || ["Valid phase result"],
         policyVersion: rawBody.policyVersion || rawBody.policy_version || "v2.0",
         agentsMdSha256,
@@ -399,6 +403,10 @@ const server = http.createServer(async (req, res) => {
         memory_mb?: number;
         ttl_seconds?: number;
         async?: boolean;
+        execution_kind?: "agent" | "code";
+        executionKind?: "agent" | "code";
+        deterministic_command?: string;
+        deterministicCommand?: string;
       }>(req);
 
       const targetPhases = (body.phases && body.phases.length > 0)
@@ -407,6 +415,8 @@ const server = http.createServer(async (req, res) => {
 
       const allowedPaths = body.allowed_paths ?? ["src/**", "output/**"];
       const immutablePaths = body.immutable_paths ?? ["AGENTS.md"];
+      const executionKind = body.executionKind || body.execution_kind;
+      const deterministicCommand = body.deterministicCommand || body.deterministic_command;
 
       if (multiPhaseSequencer && targetPhases.length > 1) {
         const seqConfig: MultiPhaseSequenceConfig = {
@@ -418,7 +428,9 @@ const server = http.createServer(async (req, res) => {
           agentsMdContent: body.agents_md_content,
           cpuMillis: body.cpu_millis,
           memoryMb: body.memory_mb,
-          ttlSeconds: body.ttl_seconds
+          ttlSeconds: body.ttl_seconds,
+          executionKind,
+          deterministicCommand
         };
 
         if (body.async) {
@@ -445,7 +457,9 @@ const server = http.createServer(async (req, res) => {
         agentsMdContent: body.agents_md_content,
         cpuMillis: body.cpu_millis,
         memoryMb: body.memory_mb,
-        ttlSeconds: body.ttl_seconds
+        ttlSeconds: body.ttl_seconds,
+        executionKind,
+        deterministicCommand
       };
 
       if (body.async) {

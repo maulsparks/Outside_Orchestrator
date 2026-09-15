@@ -24,6 +24,8 @@ export interface MultiPhaseSequenceConfig {
   ttlSeconds?: number;
   pollIntervalMs?: number;
   maxWaitBootMs?: number;
+  executionKind?: "agent" | "code";
+  deterministicCommand?: string;
 }
 
 export interface MultiPhaseSequenceResult {
@@ -90,6 +92,15 @@ export class MultiPhaseSequencer {
         parent_git_sha: currentParentGitSha
       };
 
+      // Determine execution kind: for "test" phase default to deterministic "code" gate
+      const phaseExecutionKind = phase === "test"
+        ? (config.executionKind ?? ((run.envelope as Record<string, unknown>)?.execution_kind as ("agent" | "code") | undefined) ?? "code")
+        : (config.executionKind ?? ((run.envelope as Record<string, unknown>)?.execution_kind as ("agent" | "code") | undefined));
+
+      const phaseDeterministicCommand = config.deterministicCommand ??
+        ((run.envelope as Record<string, unknown>)?.deterministic_command as string | undefined) ??
+        (phaseExecutionKind === "code" || phase === "test" ? "npm test" : undefined);
+
       const dispatchConfig: LiveDispatchConfig = {
         run: phaseRun,
         phase,
@@ -105,7 +116,9 @@ export class MultiPhaseSequencer {
         memoryMb: config.memoryMb,
         ttlSeconds: config.ttlSeconds,
         pollIntervalMs: config.pollIntervalMs,
-        maxWaitBootMs: config.maxWaitBootMs
+        maxWaitBootMs: config.maxWaitBootMs,
+        executionKind: phaseExecutionKind,
+        deterministicCommand: phaseDeterministicCommand
       };
 
       const result = await this.liveDispatcher.executeRun(dispatchConfig);

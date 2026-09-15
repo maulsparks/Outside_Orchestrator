@@ -902,15 +902,19 @@ export function getDashboardHtml(): string {
           <!-- Human User Prompt Card -->
           <div id="humanPromptCard" style="background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.25rem; margin-top: 1rem; margin-bottom: 1rem;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-              <span style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; color: var(--cyan);">Human User Prompt & Task Specification</span>
+              <div style="display: flex; align-items: center; gap: 0.6rem;">
+                <span style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; color: var(--cyan);">Human User Prompt & Task Specification</span>
+                <span id="executionKindBadge" style="font-size: 0.7rem; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: 700; font-family: var(--font-mono); display: none;"></span>
+              </div>
               <span id="promptIntentBadge" style="font-size: 0.7rem; background: rgba(255,255,255,0.06); padding: 0.2rem 0.5rem; border-radius: 4px; color: var(--text-dim); font-family: var(--font-mono);">intent: --</span>
             </div>
             <div id="metaUserPrompt" style="font-family: var(--font-mono); font-size: 0.85rem; color: #fff; white-space: pre-wrap; background: rgba(0,0,0,0.25); padding: 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); max-height: 140px; overflow-y: auto;">
               --
             </div>
-            <div style="display: flex; gap: 1.5rem; margin-top: 0.6rem; font-size: 0.75rem; color: var(--text-muted);">
+            <div style="display: flex; flex-wrap: wrap; gap: 1.5rem; margin-top: 0.6rem; font-size: 0.75rem; color: var(--text-muted);">
               <div><strong style="color: var(--text-dim);">Acceptance Criteria:</strong> <span id="metaAcceptance">--</span></div>
               <div><strong style="color: var(--text-dim);">Max Fix Loops:</strong> <span id="metaFixLoops" style="color: var(--cyan); font-family: var(--font-mono);">3 (default)</span></div>
+              <div id="metaDetCmdContainer" style="display: none;"><strong style="color: var(--text-dim);">Deterministic Gate:</strong> <span id="metaDeterministicCommand" style="color: var(--emerald); font-family: var(--font-mono);">--</span></div>
             </div>
           </div>
 
@@ -1104,6 +1108,17 @@ export function getDashboardHtml(): string {
         <textarea id="inputUserPrompt" class="form-input" rows="4" style="font-family: var(--font-mono); font-size: 0.8rem; resize: vertical;" placeholder="Enter task instructions (e.g. Add a GET /api/tags endpoint...)"></textarea>
       </div>
       <div class="form-group">
+        <label class="form-label">Execution Kind</label>
+        <select id="inputExecutionKind" class="form-input" onchange="toggleDetCmdInput()">
+          <option value="agent" selected>Agent Driven (AI Inference & Model Synthesis)</option>
+          <option value="code">Code Gate (Deterministic Subprocess — $0.00)</option>
+        </select>
+      </div>
+      <div class="form-group" id="groupDeterministicCommand" style="display: none;">
+        <label class="form-label">Deterministic Command (SSSF Subprocess Pattern)</label>
+        <input type="text" id="inputDeterministicCommand" class="form-input" value="npm test" placeholder="e.g. npm test, bun test, pytest">
+      </div>
+      <div class="form-group">
         <label class="form-label">Parent Git SHA</label>
         <input type="text" id="inputParentSha" class="form-input" value="cb48638000000000000000000000000000000000">
       </div>
@@ -1274,10 +1289,14 @@ export function getDashboardHtml(): string {
 
       container.innerHTML = filtered.map(r => {
         const promptSnippet = (r.envelope?.user_prompt || (r.envelope?.intent !== 'execute' ? r.envelope?.intent : '') || '').split('\\n')[0].slice(0, 36);
+        const isCode = r.envelope?.execution_kind === "code";
+        const kindTag = isCode
+          ? '<span style="font-size: 0.65rem; color: var(--emerald); font-weight: 700; margin-left: 0.35rem; font-family: var(--font-mono);">[CODE]</span>'
+          : '<span style="font-size: 0.65rem; color: var(--violet); font-weight: 700; margin-left: 0.35rem; font-family: var(--font-mono);">[AGENT]</span>';
         return \`
         <div class="run-item \${r.id === selectedRunId ? 'active' : ''}" onclick="selectRun('\${r.id}')">
           <div class="run-header-line">
-            <span class="run-id">\${r.id.slice(0, 13)}...</span>
+            <span class="run-id">\${r.id.slice(0, 13)}...\${kindTag}</span>
             <span class="phase-badge phase-\${r.phase}">\${r.phase}</span>
           </div>
           \${promptSnippet ? \`<div style="font-size: 0.72rem; color: var(--cyan); margin-top: 0.25rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono);">\${promptSnippet}</div>\` : ''}
@@ -1315,6 +1334,35 @@ export function getDashboardHtml(): string {
       document.getElementById("metaAcceptance").textContent = Array.isArray(crit) ? crit.join("; ") : (crit || "Valid phase result");
       const fixLoops = run.envelope?.max_fix_loops ?? 3;
       document.getElementById("metaFixLoops").textContent = \`\${fixLoops} bounded\`;
+
+      const execKind = run.envelope?.execution_kind || (run.phase === "test" ? "code" : "agent");
+      const kindBadge = document.getElementById("executionKindBadge");
+      if (kindBadge) {
+        kindBadge.style.display = "inline-block";
+        if (execKind === "code") {
+          kindBadge.style.background = "rgba(16, 185, 129, 0.15)";
+          kindBadge.style.color = "var(--emerald)";
+          kindBadge.style.border = "1px solid rgba(16, 185, 129, 0.3)";
+          kindBadge.textContent = "[CODE GATE: $0.00]";
+        } else {
+          kindBadge.style.background = "rgba(168, 85, 247, 0.15)";
+          kindBadge.style.color = "var(--violet)";
+          kindBadge.style.border = "1px solid rgba(168, 85, 247, 0.3)";
+          kindBadge.textContent = "[AGENT DRIVEN]";
+        }
+      }
+
+      const detCmd = run.envelope?.deterministic_command;
+      const detContainer = document.getElementById("metaDetCmdContainer");
+      const detCmdSpan = document.getElementById("metaDeterministicCommand");
+      if (detContainer && detCmdSpan) {
+        if (detCmd || execKind === "code") {
+          detContainer.style.display = "block";
+          detCmdSpan.textContent = detCmd || "npm test";
+        } else {
+          detContainer.style.display = "none";
+        }
+      }
 
       // Update Metadata Deck
       document.getElementById("metaRunId").textContent = run.id;
@@ -1617,12 +1665,24 @@ export function getDashboardHtml(): string {
       }
     }
 
+    function toggleDetCmdInput() {
+      const kind = document.getElementById("inputExecutionKind").value;
+      const group = document.getElementById("groupDeterministicCommand");
+      if (group) {
+        group.style.display = kind === "code" ? "block" : "none";
+      }
+    }
+
     async function submitNewRun() {
       const tenantId = document.getElementById("inputTenantId").value;
       const parentSha = document.getElementById("inputParentSha").value;
       const maxCost = parseInt(document.getElementById("inputMaxCost").value, 10) || 1000;
       const maxFixLoops = parseInt(document.getElementById("inputMaxFixLoops")?.value, 10) || 3;
       const userPrompt = document.getElementById("inputUserPrompt") ? document.getElementById("inputUserPrompt").value.trim() : "";
+      const executionKind = document.getElementById("inputExecutionKind") ? document.getElementById("inputExecutionKind").value : "agent";
+      const deterministicCommand = executionKind === "code" && document.getElementById("inputDeterministicCommand")
+        ? (document.getElementById("inputDeterministicCommand").value.trim() || "npm test")
+        : undefined;
       const autoDispatch = document.getElementById("inputAutoDispatch") ? document.getElementById("inputAutoDispatch").checked : true;
 
       try {
@@ -1634,6 +1694,8 @@ export function getDashboardHtml(): string {
             parent_git_sha: parentSha,
             user_prompt: userPrompt || undefined,
             max_fix_loops: maxFixLoops,
+            execution_kind: executionKind,
+            deterministic_command: deterministicCommand,
             idempotency_key: "idem-" + Date.now() + "-" + Math.random().toString(36).substring(2, 9),
             budget: { max_cost_cents: maxCost }
           })
@@ -1644,10 +1706,13 @@ export function getDashboardHtml(): string {
           closeNewRunModal();
           const newId = data.run ? data.run.id : (data.id || null);
           if (newId && autoDispatch) {
+            const dispatchPayload = executionKind === "code"
+              ? { phase: "test", execution_kind: "code", deterministic_command: deterministicCommand || "npm test", async: true }
+              : { phase: "build", async: true };
             await fetch(\`/v1/runs/\${newId}/dispatch\`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ phase: "build", async: true })
+              body: JSON.stringify(dispatchPayload)
             });
           }
           await fetchRuns();
@@ -1662,6 +1727,9 @@ export function getDashboardHtml(): string {
 
     async function dispatchSelectedRun() {
       if (!selectedRunId) return;
+      const run = allRuns.find(r => r.id === selectedRunId);
+      const isCode = run && run.envelope?.execution_kind === "code";
+      const detCmd = run && run.envelope?.deterministic_command;
       const btn = document.getElementById("btnDispatchSandbox");
       if (btn) {
         btn.disabled = true;
@@ -1669,10 +1737,13 @@ export function getDashboardHtml(): string {
       }
 
       try {
+        const payload = isCode
+          ? { phase: "test", execution_kind: "code", deterministic_command: detCmd || "npm test", async: true }
+          : { phase: "build", async: true };
         const res = await fetch(\`/v1/runs/\${selectedRunId}/dispatch\`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ phase: "build", async: true })
+          body: JSON.stringify(payload)
         });
         const data = await res.json();
         if (res.ok) {

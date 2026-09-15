@@ -128,4 +128,27 @@ test("RequestAdmissionEngine sets max_fix_loops defaulting to 3 and preserves cu
   assert.equal(resCustom.run.envelope?.max_fix_loops, 5);
 });
 
+test("RequestAdmissionEngine admits executionKind and deterministicCommand into run envelope", async () => {
+  const repo = new InMemoryIngressRepo();
+  const leaseManager = new LeaseManager(new InMemoryLeaseStorage(), "worker-01");
+  const engine = new RequestAdmissionEngine(repo, leaseManager);
+
+  // 1. Default (agent) when omitted
+  const reqDefault = makeValidRequest({ idempotencyKey: "idem-default-kind" });
+  const resDefault = await engine.admitRequest(reqDefault);
+  assert.equal(resDefault.run.envelope?.execution_kind, "agent");
+  assert.equal(resDefault.run.envelope?.deterministic_command, undefined);
+
+  // 2. Explicit code gate with deterministic command
+  const reqCode = makeValidRequest({
+    idempotencyKey: "idem-code-kind",
+    executionKind: "code",
+    deterministicCommand: "npm test"
+  });
+  const resCode = await engine.admitRequest(reqCode);
+  assert.equal(resCode.run.envelope?.execution_kind, "code");
+  assert.equal(resCode.run.envelope?.deterministic_command, "npm test");
+});
+
+
 
