@@ -51,9 +51,9 @@ sleep 3
 
 # Verify systemd service status if available
 if command -v systemctl >/dev/null 2>&1; then
-  if ! ${SUDO_CMD} systemctl is-active --quiet "${SERVICE_NAME}"; then
+  if ! systemctl is-active --quiet "${SERVICE_NAME}"; then
     echo "✖ Deployment verification failed: ${SERVICE_NAME} is not active!"
-    ${SUDO_CMD} systemctl status "${SERVICE_NAME}" --no-pager || true
+    systemctl status "${SERVICE_NAME}" --no-pager || true
     exit 1
   fi
   echo "✔ Systemd service is active (running)."
