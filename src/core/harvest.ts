@@ -618,6 +618,7 @@ export async function commitHarvestRef(
       commitSha,
       baseBranch: params.targetBranch || "main",
       repository: params.repositoryId,
+      repoPath: params.repoPath || process.cwd(),
       title: prTitle,
       bodyMarkdown: prBody
     });

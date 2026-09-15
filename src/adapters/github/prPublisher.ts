@@ -1,4 +1,8 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { HarvestAttestation } from "../../../contracts/interfaces.js";
+
+const execFileAsync = promisify(execFile);
 
 export interface GitHubPublisherOptions {
   token?: string;
@@ -200,6 +204,8 @@ export class GitHubPrPublisher {
     repo?: string;
     branch: string;
     commitSha: string;
+    repoPath?: string;
+    pushLocalRef?: boolean;
   }): Promise<{ success: boolean; ref?: string; error?: string }> {
     if (!this.hasToken()) {
       return { success: false, error: "No GitHub token configured" };
@@ -209,8 +215,20 @@ export class GitHubPrPublisher {
     const repo = params.repo ?? this.defaultRepo.repo;
     const ref = `refs/heads/${params.branch}`;
 
+    // 1. If local git push requested, push the commit object and ref to GitHub
+    if (params.pushLocalRef !== false) {
+      try {
+        const cwd = params.repoPath || process.cwd();
+        const authRemote = `https://x-access-token:${this.token}@github.com/${owner}/${repo}.git`;
+        await execFileAsync("git", ["push", authRemote, `${ref}:${ref}`, "--force"], { cwd });
+        return { success: true, ref };
+      } catch {
+        // Fall back to GitHub REST API if local git push failed
+      }
+    }
+
     try {
-      // 1. Attempt to create the ref
+      // 2. Attempt to create the ref via REST API
       const createRes = await this.fetchFn(`${this.apiBaseUrl}/repos/${owner}/${repo}/git/refs`, {
         method: "POST",
         headers: {
@@ -230,8 +248,10 @@ export class GitHubPrPublisher {
         return { success: true, ref };
       }
 
+      const errText = await createRes.text();
+
       // If ref already exists (422), force-update the existing ref
-      if (createRes.status === 422) {
+      if (createRes.status === 422 && (errText.includes("already exists") || errText.includes("Reference already exists"))) {
         const updateRes = await this.fetchFn(
           `${this.apiBaseUrl}/repos/${owner}/${repo}/git/refs/heads/${params.branch}`,
           {
@@ -253,11 +273,10 @@ export class GitHubPrPublisher {
         if (updateRes.ok) {
           return { success: true, ref };
         }
-        const errText = await updateRes.text();
-        return { success: false, error: `Failed to update ref: ${updateRes.status} ${errText}` };
+        const updateErr = await updateRes.text();
+        return { success: false, error: `Failed to update ref: ${updateRes.status} ${updateErr}` };
       }
 
-      const errText = await createRes.text();
       return { success: false, error: `Failed to create ref: ${createRes.status} ${errText}` };
     } catch (err: unknown) {
       const error = err as Error;
@@ -365,6 +384,8 @@ export class GitHubPrPublisher {
     commitSha: string;
     baseBranch?: string;
     repository?: string;
+    repoPath?: string;
+    pushLocalRef?: boolean;
     title?: string;
     bodyMarkdown: string;
   }): Promise<PullRequestResult> {
@@ -379,12 +400,14 @@ export class GitHubPrPublisher {
       };
     }
 
-    // Step 1: Create or update remote branch ref
+    // Step 1: Create or update remote branch ref (with git push or REST API)
     const branchResult = await this.createOrUpdateBranch({
       owner,
       repo,
       branch,
-      commitSha: params.commitSha
+      commitSha: params.commitSha,
+      repoPath: params.repoPath,
+      pushLocalRef: params.pushLocalRef
     });
 
     if (!branchResult.success) {
