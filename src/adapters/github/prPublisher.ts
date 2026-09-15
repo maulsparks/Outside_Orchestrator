@@ -230,8 +230,8 @@ export class GitHubPrPublisher {
             GIT_COMMITTER_EMAIL: "orchestrator@outside-factory.internal"
           }
         });
-        return { success: true, ref };
-      } catch {
+      } catch (pushErr: unknown) {
+        console.error("[GitHubPrPublisher] local git push error:", (pushErr as Error).message);
         // Fall back to GitHub REST API if local git push failed
       }
     }

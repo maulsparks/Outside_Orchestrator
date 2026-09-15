@@ -561,7 +561,8 @@ export async function commitHarvestRef(
     // Create harvest feature branch
     await execFileAsync("git", ["update-ref", branchRef, commitSha], { cwd });
     branchCreated = true;
-  } catch {
+  } catch (err: unknown) {
+    console.error("[commitHarvestRef] git error:", (err as Error).message);
     // If not in a git working tree containing the tree SHA object, deterministically generate commit SHA
     commitSha = crypto
       .createHash("sha256")
