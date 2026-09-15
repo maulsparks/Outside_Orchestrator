@@ -220,7 +220,16 @@ export class GitHubPrPublisher {
       try {
         const cwd = params.repoPath || process.cwd();
         const authRemote = `https://x-access-token:${this.token}@github.com/${owner}/${repo}.git`;
-        await execFileAsync("git", ["push", authRemote, `${ref}:${ref}`, "--force"], { cwd });
+        await execFileAsync("git", ["push", authRemote, `${params.commitSha}:${ref}`, "--force"], {
+          cwd,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: "Outside Orchestrator",
+            GIT_AUTHOR_EMAIL: "orchestrator@outside-factory.internal",
+            GIT_COMMITTER_NAME: "Outside Orchestrator",
+            GIT_COMMITTER_EMAIL: "orchestrator@outside-factory.internal"
+          }
+        });
         return { success: true, ref };
       } catch {
         // Fall back to GitHub REST API if local git push failed

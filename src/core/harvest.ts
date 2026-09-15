@@ -541,7 +541,16 @@ export async function commitHarvestRef(
     const { stdout } = await execFileAsync(
       "git",
       ["commit-tree", params.acceptedTreeSha, "-p", params.parentGitSha, "-m", msg],
-      { cwd }
+      {
+        cwd,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "Outside Orchestrator",
+          GIT_AUTHOR_EMAIL: "orchestrator@outside-factory.internal",
+          GIT_COMMITTER_NAME: "Outside Orchestrator",
+          GIT_COMMITTER_EMAIL: "orchestrator@outside-factory.internal"
+        }
+      }
     );
     commitSha = stdout.trim();
 
